@@ -1,0 +1,16 @@
+# Segmentos de video (~500 MB). Se preparan con scripts/prepare-segments.*
+segments/*
+!segments/.gitkeep
+hls test/
+
+# Binarios y datos locales
+/server
+*.exe
+*.db
+*.db-wal
+*.db-shm
+data/
+
+# Sistema
+.DS_Store
+Thumbs.db
