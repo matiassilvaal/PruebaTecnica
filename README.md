@@ -26,6 +26,18 @@ Después, `http://localhost:8080` → crear cuenta → el player.
 > el contenedor arranca con la base en el lugar equivocado. En PowerShell, CMD, Linux y macOS
 > no hace falta.
 
+`docker build` produce una imagen para la arquitectura de la máquina que la construye. Para
+otra —un Mac con Apple Silicon, por ejemplo— se pide explícitamente:
+
+```bash
+docker buildx build --platform linux/arm64 -t zapping-live --load .
+```
+
+La etapa de compilación corre siempre en la arquitectura del que construye y cross-compila
+hacia la de destino (`CGO_ENABLED=0` lo hace trivial en Go), así que armar la imagen arm64
+desde una máquina x86 tarda lo mismo que la nativa. Dejar que Docker emule el compilador con
+QEMU tardaría diez veces más sin ganar nada.
+
 El primer comando verifica **contra el manifiesto** que estén todos los segmentos que el
 `.m3u8` nombra, y falla listando los que falten. Un conteo fijo daría por buena una copia a
 la que le falta justo el archivo que hace falta, y el error aparecería recién dentro del

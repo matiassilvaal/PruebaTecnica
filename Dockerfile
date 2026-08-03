@@ -5,7 +5,18 @@
 # con CGO_ENABLED=0 y sale un binario estático. Eso es lo que permite que la
 # imagen final no lleve toolchain de C ni libc.
 
-FROM golang:1.26-alpine AS build
+# --platform=$BUILDPLATFORM hace que esta etapa corra SIEMPRE en la arquitectura
+# de quien construye, y el binario se cross-compila hacia la de destino con
+# GOOS/GOARCH. Como CGO_ENABLED=0, Go cross-compila sin toolchain adicional.
+#
+# La alternativa —dejar que Docker emule la etapa de build con QEMU— compila el
+# mismo código diez veces más lento sin ganar nada. Esto importa de verdad: un
+# Mac con Apple Silicon necesita linux/arm64, y una imagen amd64 ahí sólo corre
+# emulada.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /src
 
@@ -19,7 +30,8 @@ COPY . .
 # -trimpath borra las rutas de la máquina de compilación del binario.
 # -s -w quitan la tabla de símbolos y la información de depuración: ~30 % menos
 # de tamaño, y nada de esto hace falta en producción.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
 
 FROM alpine:3.20

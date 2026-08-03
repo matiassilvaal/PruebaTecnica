@@ -45,7 +45,15 @@ Las decisiones y su motivo:
   las conexiones SSE se cortan de golpe y el WAL de SQLite queda sin cerrar. Por esa misma
   razón `go run` tampoco sirve como proceso principal — se comprobó, y falla igual.
 
-La imagen final pesa **524 MB**, de los cuales 480 son los segmentos. El binario son ~19 MB.
+- **La etapa de build corre en la arquitectura de quien construye** (`--platform=$BUILDPLATFORM`)
+  y cross-compila con `GOOS`/`GOARCH` hacia la de destino. Con `CGO_ENABLED=0` eso es
+  gratis en Go. La alternativa —dejar que Docker emule la etapa de compilación con QEMU—
+  tarda unas diez veces más y no aporta nada. Importa de verdad: un Mac con Apple Silicon
+  necesita `linux/arm64`, y una imagen amd64 ahí sólo corre emulada.
+
+La imagen final pesa **524 MB**, de los cuales 480 son los segmentos. El binario son ~13 MB
+(12,5 en arm64). Exportada con `docker save` da un tar de **501 MB**; comprimirlo apenas baja
+a 484, porque los `.ts` ya vienen comprimidos.
 
 ## `.dockerignore`
 
