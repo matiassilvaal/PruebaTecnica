@@ -1,0 +1,55 @@
+/* Glassmorfismo propio, sin framework. Ver docs/06-decisiones.md.
+   REGLA ESTRICTA: backdrop-filter NUNCA sobre el <video>. */
+
+:root {
+  --fondo:       #0b0d12;
+  --glass-bg:    rgba(255, 255, 255, .06);
+  --glass-borde: rgba(255, 255, 255, .12);
+  --texto:       #f2f4f8;
+  /* Contraste 7:1 sobre el fondo. El gris suave habitual del glassmorfismo
+     (#8a8f98) queda en 3.4:1 y no pasa AA; este es el punto donde este estilo
+     suele fallar. */
+  --texto-suave: #b9c0cc;
+  --acento:      #e50914;
+  --error:       #ff8a8a;
+  --radio:       16px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(60rem 60rem at 15% -10%, rgba(229, 9, 20, .22), transparent 60%),
+    radial-gradient(50rem 50rem at 95% 10%, rgba(64, 120, 255, .18), transparent 55%),
+    var(--fondo);
+  background-attachment: fixed;
+  color: var(--texto);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.vidrio {
+  background: var(--glass-bg);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid var(--glass-borde);
+  border-radius: var(--radio);
+}
+
+.marca { font-weight: 700; letter-spacing: .02em; }
+.marca span { color: var(--acento); }
+
+a { color: var(--texto); }
+
+/* Quien prefiere menos movimiento no debería sufrir el punto pulsante del
+   indicador de LIVE ni las transiciones de la ventana. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
