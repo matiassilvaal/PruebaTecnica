@@ -36,32 +36,41 @@ if [ ! -f "$ORIGEN/$MANIFIESTO" ]; then
 fi
 
 # Los nombres de segmento son las líneas del manifiesto que no son etiquetas.
-mapfile -t SEGMENTOS < <(grep -v '^#' "$ORIGEN/$MANIFIESTO" | grep '\.ts$' | tr -d '\r')
+#
+# Se leen a un archivo temporal y no a un array con `mapfile`: eso es bash 4+, y
+# macOS todavía trae bash 3.2. Este script tiene que correr tal cual en la
+# máquina de quien evalúe, sea la que sea.
+LISTA=$(mktemp)
+trap 'rm -f "$LISTA" "$LISTA.faltan"' EXIT
 
-if [ "${#SEGMENTOS[@]}" -eq 0 ]; then
+grep -v '^#' "$ORIGEN/$MANIFIESTO" | grep '\.ts$' | tr -d '\r' > "$LISTA"
+
+CUANTOS=$(wc -l < "$LISTA" | tr -d ' ')
+if [ "$CUANTOS" -eq 0 ]; then
   echo "error: $MANIFIESTO no nombra ningún .ts" >&2
   exit 1
 fi
 
 # Se comprueba TODO antes de copiar nada: es preferible fallar con la lista
 # completa de lo que falta que dejar el destino a medio llenar.
-FALTAN=()
-for s in "${SEGMENTOS[@]}"; do
-  [ -f "$ORIGEN/$s" ] || FALTAN+=("$s")
-done
+: > "$LISTA.faltan"
+while IFS= read -r s; do
+  [ -f "$ORIGEN/$s" ] || echo "$s" >> "$LISTA.faltan"
+done < "$LISTA"
 
-if [ "${#FALTAN[@]}" -gt 0 ]; then
-  echo "error: el manifiesto nombra ${#SEGMENTOS[@]} segmentos y faltan ${#FALTAN[@]}:" >&2
-  printf '  %s\n' "${FALTAN[@]}" >&2
+FALTAN=$(wc -l < "$LISTA.faltan" | tr -d ' ')
+if [ "$FALTAN" -gt 0 ]; then
+  echo "error: el manifiesto nombra $CUANTOS segmentos y faltan $FALTAN:" >&2
+  sed 's/^/  /' "$LISTA.faltan" >&2
   exit 1
 fi
 
 mkdir -p "$DESTINO"
 cp "$ORIGEN/$MANIFIESTO" "$DESTINO/"
-for s in "${SEGMENTOS[@]}"; do
+while IFS= read -r s; do
   cp "$ORIGEN/$s" "$DESTINO/"
-done
+done < "$LISTA"
 
-TAMANO=$(du -sh "$DESTINO" | cut -f1)
-echo "listo: ${#SEGMENTOS[@]} segmentos y el manifiesto en $DESTINO/ ($TAMANO)"
+TAMANO=$(du -sh "$DESTINO" | cut -f1 | tr -d ' ')
+echo "listo: $CUANTOS segmentos y el manifiesto en $DESTINO/ ($TAMANO)"
 echo "siguiente: docker build -t zapping-live ."

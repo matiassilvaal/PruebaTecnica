@@ -21,6 +21,25 @@ set -uo pipefail
 # script reporta fallos de la aplicación que en realidad son suyos.
 d() { MSYS_NO_PATHCONV=1 docker "$@"; }
 
+# %N (nanosegundos) es de GNU date. El date de macOS y de los BSD no lo conoce y
+# devuelve una "N" literal, con lo que la resta daría un disparate. perl viene de
+# fábrica en macOS y en casi todo Linux; si tampoco estuviera, se cae a segundos,
+# que basta para distinguir un apagado ordenado de uno que agota los 10 s.
+ahora_ms() {
+  local n
+  n=$(date +%s%N 2>/dev/null || echo N)
+  case "$n" in
+    *N*)
+      if command -v perl >/dev/null 2>&1; then
+        perl -MTime::HiRes=time -e 'printf "%.0f\n", time * 1000'
+      else
+        echo $(( $(date +%s) * 1000 ))
+      fi
+      ;;
+    *) echo $(( n / 1000000 )) ;;
+  esac
+}
+
 IMAGEN="${IMAGEN:-zapping-live}"
 CONTENEDOR="zapping-humo-$$"
 PUERTO="${PUERTO:-8099}"
@@ -141,9 +160,9 @@ echo "-- persistencia y apagado --"
 # El apagado tiene que ser ordenado: con el ENTRYPOINT en forma exec el binario
 # es PID 1 y recibe el SIGTERM. Si tardara los 10 s completos, la señal no está
 # llegando y el contenedor estaría muriendo de un SIGKILL.
-inicio=$(date +%s%N)
+inicio=$(ahora_ms)
 d stop "$CONTENEDOR" >/dev/null
-ms=$(( ($(date +%s%N) - inicio) / 1000000 ))
+ms=$(( $(ahora_ms) - inicio ))
 [ "$ms" -lt 5000 ] \
   && ok "docker stop apagó ordenadamente en ${ms} ms" \
   || falla "docker stop tardó ${ms} ms: ¿la señal llega al proceso?"
