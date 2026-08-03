@@ -244,6 +244,43 @@ Salieron de las revisiones del bloque 02 y hay que respetarlas al implementar el
 - **`Snapshot.Window` y `Snapshot.Playlist` son de sólo lectura.** Mutarlos corrompe el
   estado que ven todos los lectores concurrentes, porque comparten el array subyacente.
 
+Del bloque 03 (auth y base de datos):
+
+- **El alta de usuarios va por `cuenta.Registrar`, no por `Store.Crear`.** `Crear` recibe el
+  hash ya calculado y no valida: existe como vía de bajo nivel para los tests. Usarlo desde
+  un handler permitiría guardar la contraseña en claro y saltarse las reglas de validación.
+- **El handler de login debe llamar a `auth.VerificarEnVacio()` cuando el email no existe.**
+  Sin eso, un email inexistente responde en microsegundos y uno registrado paga los ~370 ms
+  de bcrypt: el tiempo de respuesta revela qué cuentas existen aunque el mensaje de error sea
+  idéntico. La función está implementada y probada, pero **todavía no tiene llamante**.
+- **El login debe rotar la sesión.** `Sessions.DestruirDeUsuario` antes de `Crear` previene
+  session fixation. Nota de la revisión: como efecto colateral desconecta los demás
+  dispositivos del usuario, cosa discutible en un producto de streaming; si molesta, basta
+  con rotar el token y dejar `DestruirDeUsuario` para el cambio de contraseña.
+- **`Sessions.Limpiar` no la ejecuta nadie todavía.** Debe correr en una goroutine periódica
+  cancelable por contexto, o la tabla `sessions` crece sin límite.
+- **`Sessions.Resolver` devuelve `(int64, bool, error)`.** El tercer valor distingue "la base
+  falló" de "no hay sesión": ignorarlo produciría un bucle de redirección al login sin una
+  sola línea de log si SQLite se cae.
+- **La cookie se emite con `Guard.PonerCookie(w, token)`**, que toma el TTL de `Sessions`.
+  No pases el TTL por separado: si diverge, la cookie y la fila caducan en momentos distintos.
+
+## Optimización conocida y no aplicada
+
+`Guard.proteger` hace dos consultas por request protegido: una a `sessions` y otra a `users`.
+En `/live/segments/{name}` eso son dos consultas por segmento y por espectador. Un `JOIN`
+único las reduce a una y de paso elimina una ventana TOCTOU entre ambas:
+
+```sql
+SELECT u.id, u.name, u.email, u.created_at, s.expires_at
+FROM sessions s JOIN users u ON u.id = s.user_id
+WHERE s.token_hash = ?
+```
+
+Se dejó sin aplicar por no reabrir la API de sesiones al cierre del bloque. La ventana TOCTOU
+es benigna —un request pasa y el siguiente ya falla— pero la consulta doble sí es medible en
+la ruta caliente de los segmentos.
+
 ## Notas para el correo de entrega
 
 Puntos a cubrir, según lo que pidieron explícitamente:
