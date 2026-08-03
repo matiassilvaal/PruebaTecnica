@@ -3136,34 +3136,29 @@ func TestSSESinSesionEs401(t *testing.T) {
 
 func TestSSEElMensajeTerminaEnLineaEnBlanco(t *testing.T) {
 	// EventSource sólo DESPACHA el mensaje al ver la línea en blanco. Con un
-	// solo 
- el navegador acumula datos y no entrega nada: el panel se
+	// solo \n el navegador acumula datos y no entrega nada: el panel se
 	// quedaría vacío para siempre con la suite entera en verde y sin una línea
 	// de log. Es la diferencia entre "los tests pasan" y "funciona en el
 	// navegador", y no la cubre ninguna otra aserción: leerEvento lee por
-	// líneas y un solo 
- también termina la línea del data:.
+	// líneas y un solo \n también termina la línea del data:.
 	b := entorno(t)
 	srv := servidorDePrueba(t, b)
 	_, galleta := usuarioConSesion(t, b)
 
 	_, br := abrirSSE(t, srv, galleta)
 
-	datos, err := br.ReadString('
-')
+	datos, err := br.ReadString('\n')
 	if err != nil {
 		t.Fatalf("leyendo el evento: %v", err)
 	}
 	if !strings.HasPrefix(datos, "data: ") {
 		t.Fatalf("primera línea = %q, quiero un data:", datos)
 	}
-	cierre, err := br.ReadString('
-')
+	cierre, err := br.ReadString('\n')
 	if err != nil {
 		t.Fatalf("leyendo el cierre del mensaje: %v", err)
 	}
-	if cierre != "
-" {
+	if cierre != "\n" {
 		t.Errorf("tras el data: llegó %q, quiero una línea en blanco", cierre)
 	}
 }
@@ -3174,7 +3169,7 @@ func TestSSEElApagadoDelHubCierraLaConexion(t *testing.T) {
 	// solos. De eso depende que http.Server.Shutdown termine rápido en vez de
 	// agotar su plazo, y el servidor no lleva WriteTimeout que lo rescate.
 	//
-	// Sin la rama `!abierto`, un canal cerrado se leería como un evento normal
+	// Sin la rama !abierto, un canal cerrado se leería como un evento normal
 	// una y otra vez: el handler entraría en un bucle cerrado escribiendo
 	// eventos vacíos a toda velocidad.
 	b := entorno(t)
@@ -3187,8 +3182,7 @@ func TestSSEElApagadoDelHubCierraLaConexion(t *testing.T) {
 	b.Cancelar() // apaga el hub con el espectador todavía conectado
 
 	for {
-		linea, err := br.ReadString('
-')
+		linea, err := br.ReadString('\n')
 		if err != nil {
 			return // EOF: el handler cerró ordenadamente, que es lo que se busca
 		}
@@ -3341,10 +3335,7 @@ Run: `go test ./internal/web/ -count=3 ./internal/web/`
 Expected: PASS, toda la suite del paquete, sin intermitencia. Son 8 tests de SSE.
 
 Dos de ellos existen porque su mutación no rompía nada:
-`TestSSEElMensajeTerminaEnLineaEnBlanco` (escribir `
-` en vez de `
-
-` dejaba la
+`TestSSEElMensajeTerminaEnLineaEnBlanco` (escribir `\n` en vez de `\n\n` dejaba la
 suite verde y el panel muerto en el navegador) y
 `TestSSEElApagadoDelHubCierraLaConexion` (ignorar `!abierto` convertía el apagado
 en un bucle cerrado, justo el camino del que depende el `Shutdown` de la Task 8).
