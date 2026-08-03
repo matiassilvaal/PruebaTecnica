@@ -221,10 +221,10 @@ respuesta. Un `public` ahí sería una autorización explícita para que un prox
 segmento autenticado durante un año a cualquiera, que es justo lo que el requisito 4 prohíbe.
 La caché del navegador, que es de donde sale el ahorro, funciona igual con `private`.
 
-Los estáticos (`/static/*`) quedan en el medio, con `public, max-age=3600` y sin `immutable`:
-`public` acá sí corresponde porque no están protegidos, y no llevan `immutable` porque sus
-nombres no tienen huella del contenido, así que un cambio de CSS sería invisible para quien ya
-visitó la página.
+Los estáticos (`/static/*`) van con `no-cache` y un ETag del contenido, por la razón que
+explica la sección anterior: sus nombres no llevan huella, así que un `max-age` los congelaba
+sin forma de revalidar. `no-cache` no los descarga de nuevo cada vez — los revalida, y el 304
+cuesta unos cientos de bytes.
 
 ### Toda la ruta del stream está protegida, no sólo `/player`
 

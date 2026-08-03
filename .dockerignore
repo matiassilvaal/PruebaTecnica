@@ -21,3 +21,8 @@ data/
 
 # Scratch del proceso de desarrollo.
 .superpowers/
+
+# Las imágenes exportadas para la entrega: ~500 MB cada una. Las escribe
+# scripts/build-release.sh, y sin esta línea el segundo build del script se
+# subiría al daemon el .tar que acaba de generar el primero.
+dist/

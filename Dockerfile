@@ -9,10 +9,14 @@
 # de quien construye, y el binario se cross-compila hacia la de destino con
 # GOOS/GOARCH. Como CGO_ENABLED=0, Go cross-compila sin toolchain adicional.
 #
-# La alternativa —dejar que Docker emule la etapa de build con QEMU— compila el
-# mismo código diez veces más lento sin ganar nada. Esto importa de verdad: un
-# Mac con Apple Silicon necesita linux/arm64, y una imagen amd64 ahí sólo corre
-# emulada.
+# La alternativa —dejar que Docker emule también la compilación— tarda un orden
+# de magnitud más sin ganar nada. Importa de verdad: un Mac con Apple Silicon
+# necesita linux/arm64, y una imagen amd64 ahí sólo corre emulada.
+#
+# La etapa final sí es de la arquitectura de destino y ejecuta dos instrucciones,
+# así que construir para otra arquitectura necesita los manejadores binfmt.
+# Docker Desktop los trae; en un Linux pelado se instalan con
+#   docker run --privileged --rm tonistiigi/binfmt --install all
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 
 ARG TARGETOS
@@ -25,7 +29,13 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY . .
+# Sólo lo que el compilador necesita. Un `COPY . .` arrastraría los ~480 MB de
+# segments/ a la etapa de build, que no los toca: engorda la caché del builder y
+# hace que volver a preparar los segmentos invalide la capa de compilación de Go
+# por una razón que no tiene que ver con Go. Los assets web sí entran, porque
+# van embebidos: viven bajo internal/web/.
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
 
 # -trimpath borra las rutas de la máquina de compilación del binario.
 # -s -w quitan la tabla de símbolos y la información de depuración: ~30 % menos
@@ -63,7 +73,7 @@ EXPOSE 8080
 # los rotos. wget es el de BusyBox, ya incluido en alpine: no hace falta instalar
 # nada.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -q -O- http://localhost:8080/healthz || exit 1
+  CMD wget -q -O- "http://localhost:${PORT:-8080}/healthz" || exit 1
 
 # FORMA EXEC, NUNCA LA FORMA SHELL. Con ["/app/server"] el binario es PID 1 y
 # recibe el SIGTERM de `docker stop` directamente. Con la forma shell lo

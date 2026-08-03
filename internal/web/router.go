@@ -138,7 +138,7 @@ func calcularEtags() map[string]string {
 
 // cacheDeAssets hace que el navegador revalide los estáticos en cada carga.
 //
-// `no-cache` no significa "no cachear": significa "guardalo, pero pregunta antes
+// `no-cache` no significa "no cachear": significa "guárdalo, pero pregunta antes
 // de usarlo". Con el ETag puesto, esa pregunta se responde con un 304 de unos
 // pocos cientos de bytes, así que hls.js —543 KB— se baja una sola vez igual.
 //

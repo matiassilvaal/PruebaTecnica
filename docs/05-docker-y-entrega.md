@@ -161,9 +161,11 @@ No se comprueba desde un script; se verificó a mano en el navegador:
 ## Contenido del repositorio entregado
 
 ```text
-├── cmd/ internal/ web/          código
+├── cmd/ internal/               código (los assets van embebidos en internal/web/)
 ├── docs/                        estos documentos
 ├── scripts/prepare-segments.*   preparación de segmentos
+├── scripts/smoke.sh             verificación sobre el contenedor construido
+├── scripts/build-release.sh     genera los .tar de las dos arquitecturas
 ├── segments/.gitkeep            (los .ts no van en Git)
 ├── Dockerfile .dockerignore
 ├── go.mod go.sum

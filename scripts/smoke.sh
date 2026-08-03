@@ -54,15 +54,18 @@ total=0
 ok()    { total=$((total + 1)); printf '  \033[32mok\033[0m    %s\n' "$1"; }
 falla() { total=$((total + 1)); fallos=$((fallos + 1)); printf '  \033[31mFALLA\033[0m %s\n' "$1"; }
 
-limpiar() {
-  d rm -f "$CONTENEDOR" >/dev/null 2>&1 || true
-  rm -f "$GALLETA"
-}
-trap limpiar EXIT
-
 # Un volumen propio por corrida: si reusara uno con datos, el registro fallaría
 # por email duplicado y parecería un bug del servidor.
 VOLUMEN="zapping-humo-vol-$$"
+
+# El volumen se borra en el trap y no sólo al terminar bien: un Ctrl-C a mitad de
+# corrida dejaría una base de SQLite huérfana, y repetirlo las va acumulando.
+limpiar() {
+  d rm -f "$CONTENEDOR" >/dev/null 2>&1 || true
+  d volume rm "$VOLUMEN" >/dev/null 2>&1 || true
+  rm -f "$GALLETA"
+}
+trap limpiar EXIT
 
 echo "levantando $IMAGEN en el puerto $PUERTO"
 d run -d --name "$CONTENEDOR" -p "$PUERTO:8080" -v "$VOLUMEN:/data" "$IMAGEN" >/dev/null
@@ -134,9 +137,14 @@ primero=$(grep -m1 '\.ts$' <<<"$playlist" | tr -d '\r')
 if [ -n "$primero" ]; then
   seg=$(curl -s -b "$GALLETA" -o /dev/null -w '%{http_code} %{size_download}' "$BASE/live/$primero")
   read -r cod tam <<<"$seg"
-  { [ "$cod" = "200" ] && [ "$tam" -gt 100000 ]; } \
-    && ok "el segmento del playlist se sirve ($primero, $tam bytes)" \
-    || falla "el segmento $primero devolvió $cod con $tam bytes"
+  # Se compara contra el tamaño EXACTO del archivo en disco, no contra un piso.
+  # Un piso flojo dejaría pasar una respuesta truncada —un ReadFrom roto, un
+  # Range mal interpretado— que trabaría a todos los players mientras esta
+  # comprobación sigue en verde.
+  esperado=$(wc -c < "segments/$(basename "$primero")" 2>/dev/null | tr -d ' ')
+  { [ "$cod" = "200" ] && [ -n "$esperado" ] && [ "$tam" = "$esperado" ]; } \
+    && ok "el segmento del playlist llega entero ($primero, $tam bytes)" \
+    || falla "el segmento $primero devolvió $cod con $tam bytes, se esperaban ${esperado:-?}"
 else
   falla "el playlist no nombra ningún .ts"
 fi
@@ -171,20 +179,26 @@ d logs "$CONTENEDOR" 2>&1 | grep -q "apagado limpio" \
   && ok "el log confirma el apagado limpio" \
   || falla "no aparece 'apagado limpio' en el log"
 
-# La cuenta tiene que sobrevivir al reinicio: es lo que el volumen compra.
-d start "$CONTENEDOR" >/dev/null
-for _ in $(seq 1 30); do
+# La cuenta tiene que sobrevivir a que el contenedor DESAPAREZCA, no sólo a que
+# se reinicie. Por eso se destruye y se levanta uno nuevo contra el mismo
+# volumen.
+#
+# Un `docker start` sobre el mismo contenedor restaura también su capa
+# escribible, así que pasaría igual aunque la base viviera dentro del contenedor
+# en vez de en el volumen — es decir, la comprobación diría "sobrevive" sin
+# probar nada de lo que afirma. Quitar `VOLUME /data` del Dockerfile o apuntar
+# DB_PATH a /app la dejaría en verde.
+d rm -f "$CONTENEDOR" >/dev/null
+d run -d --name "$CONTENEDOR" -p "$PUERTO:8080" -v "$VOLUMEN:/data" "$IMAGEN" >/dev/null
+for _ in $(seq 1 60); do
   curl -fsS -o /dev/null "$BASE/healthz" 2>/dev/null && break
   sleep 1
 done
 relogin=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/login" \
   -d "email=$correo&contrasena=contrasena-larga")
 [ "$relogin" = "302" ] \
-  && ok "la cuenta sobrevive al reinicio del contenedor" \
-  || falla "el login tras reiniciar devolvió $relogin, quería 302"
-
-d rm -f "$CONTENEDOR" >/dev/null 2>&1
-d volume rm "$VOLUMEN" >/dev/null 2>&1
+  && ok "la cuenta sobrevive a recrear el contenedor" \
+  || falla "el login en un contenedor nuevo devolvió $relogin, quería 302"
 
 echo
 if [ "$fallos" -eq 0 ]; then

@@ -14,12 +14,26 @@ Tres comandos. Los segmentos no van en el repositorio —son ~480 MB— así que
 copia desde la carpeta que ustedes mismos proveyeron.
 
 ```bash
-./scripts/prepare-segments.sh "hls test"     # o: powershell scripts\prepare-segments.ps1 "hls test"
+./scripts/prepare-segments.sh "hls test"
 docker build -t zapping-live .
 docker run -p 8080:8080 -v zapping-data:/data zapping-live
 ```
 
+En Windows sin Git Bash, el primer comando es:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\prepare-segments.ps1 "hls test"
+```
+
+`-File` es necesario: sin él PowerShell interpreta el resto como `-Command`, vuelve a partir
+la línea y `"hls test"` llega como dos argumentos. Y `-ExecutionPolicy Bypass` porque Windows
+10 bloquea los `.ps1` por defecto.
+
 Después, `http://localhost:8080` → crear cuenta → el player.
+
+> El volumen `zapping-data` es un **volumen con nombre**, no una carpeta del host. Un bind
+> mount (`-v ./data:/data`) no funciona sin ajustar permisos: el contenedor corre como uid
+> 10001 y no podría escribir en un directorio creado por el host.
 
 > **En Git Bash (Windows)** hay que anteponer `MSYS_NO_PATHCONV=1` al `docker run`, o Git
 > Bash reescribe `-v zapping-data:/data` como `-v zapping-data:C:/Program Files/Git/data` y

@@ -43,7 +43,14 @@ fi
 LISTA=$(mktemp)
 trap 'rm -f "$LISTA" "$LISTA.faltan"' EXIT
 
-grep -v '^#' "$ORIGEN/$MANIFIESTO" | grep '\.ts$' | tr -d '\r' > "$LISTA"
+# El `tr` va PRIMERO. Con un manifiesto en CRLF la línea es "segment0.ts\r" y el
+# patrón '\.ts$' no engancha, así que limpiar los retornos después no sirve de
+# nada: la lista sale vacía. Peor todavía, con `set -o pipefail` ese grep vacío
+# devuelve 1, `set -e` mata el script acá, y el mensaje de error de más abajo se
+# vuelve inalcanzable — quien lo corra ve un exit 1 sin una sola línea.
+#
+# En Git Bash no se nota, porque su grep tolera el \r. En Linux y macOS sí.
+tr -d '\r' < "$ORIGEN/$MANIFIESTO" | grep -v '^#' | grep '\.ts$' > "$LISTA" || true
 
 CUANTOS=$(wc -l < "$LISTA" | tr -d ' ')
 if [ "$CUANTOS" -eq 0 ]; then

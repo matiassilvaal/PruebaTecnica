@@ -21,13 +21,17 @@ $Destino = 'segments'
 $Manifiesto = 'segment.m3u8'
 
 if (-not (Test-Path -LiteralPath $Origen -PathType Container)) {
-    Write-Error "no existe la carpeta $Origen"
+    # Write-Host y no Write-Error: con $ErrorActionPreference = 'Stop' un
+    # Write-Error lanza, y quien lo corra ve un volcado de PowerShell con
+    # CategoryInfo y FullyQualifiedErrorId en vez del mensaje.
+    Write-Host "error: no existe la carpeta $Origen"
     exit 1
 }
 
 $rutaManifiesto = Join-Path $Origen $Manifiesto
 if (-not (Test-Path -LiteralPath $rutaManifiesto -PathType Leaf)) {
-    Write-Error "no se encontró $rutaManifiesto. ¿Es la carpeta correcta? Debe traer el manifiesto junto a los .ts"
+    Write-Host "error: no se encontró $rutaManifiesto"
+    Write-Host "       ¿Es la carpeta correcta? Debe traer el manifiesto junto a los .ts"
     exit 1
 }
 
@@ -37,7 +41,7 @@ $segmentos = Get-Content -LiteralPath $rutaManifiesto |
     Where-Object { $_ -notmatch '^#' -and $_ -match '\.ts$' }
 
 if ($segmentos.Count -eq 0) {
-    Write-Error "$Manifiesto no nombra ningún .ts"
+    Write-Host "error: $Manifiesto no nombra ningún .ts"
     exit 1
 }
 
