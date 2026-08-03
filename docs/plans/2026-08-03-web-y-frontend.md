@@ -14,7 +14,9 @@
 - **Cero dependencias nuevas.** `go.mod` sigue con exactamente `modernc.org/sqlite` y `golang.org/x/crypto`. hls.js se vendoriza como archivo, no entra a `go.mod`.
 - **`CGO_ENABLED=0 go build ./...` debe compilar** en todo momento: es lo que habilita el binario estático del Dockerfile.
 - Comentarios, mensajes de error, nombres de test y textos de la interfaz **en español**. Los comentarios explican **por qué**, no qué.
-- Ningún test espera más de 1 segundo de tiempo real.
+- Ningún test espera más de 1 segundo de tiempo real. Unos pocos del bloque 04 pagan
+  deliberadamente una llamada a bcrypt con costo 12 (~370 ms): es la única forma de probar
+  que el camino real de hasheo se ejecuta, y ninguno se acerca al segundo.
 - `go vet ./...` limpio y `gofmt -l .` sin salida al cerrar cada tarea.
 - Cada tarea termina con su propio commit, mensaje en español.
 
@@ -1060,6 +1062,9 @@ type banco struct {
 	Guard    *auth.Guard
 	Sesiones *auth.Sessions
 	Usuarios *cuenta.Store
+
+	// Registro acumula lo que el middleware de logging escriba durante el test.
+	Registro *bufferDeLog
 }
 
 // hashBarato reemplaza a auth.HashPassword en los tests.
@@ -1098,11 +1103,15 @@ func entorno(t *testing.T) *banco {
 		Motor: motor, Pool: pool, Hub: hub,
 		Guard: guard, Sesiones: sesiones, Usuarios: usuarios,
 	}
+	// El log va a un buffer y no a stderr: el middleware emite una linea por
+	// peticion, y con decenas de tests eso entierra la salida de `go test` en
+	// ruido. El buffer queda accesible por si un test necesita afirmar sobre el.
+	b.Registro = &bufferDeLog{}
 	b.Handler = NewRouter(Deps{
 		Motor: motor, Pool: pool, Hub: hub,
 		Guard: guard, Sesiones: sesiones, Usuarios: usuarios,
 		Salud: func(context.Context) error { return nil },
-		Log:   log.New(os.Stderr, "test: ", 0),
+		Log:   log.New(b.Registro, "test: ", 0),
 	})
 	return b
 }
@@ -2167,8 +2176,16 @@ func TestFormulariosSeMuestranSinSesion(t *testing.T) {
 			if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 				t.Errorf("Content-Type = %q", ct)
 			}
-			if !strings.Contains(w.Body.String(), `method="post"`) {
+			cuerpo := w.Body.String()
+			if !strings.Contains(cuerpo, `method="post"`) {
 				t.Error("la página no trae un formulario POST")
+			}
+			// La identidad de la página, no sólo que sea "una página con
+			// formulario": con un único conjunto de plantillas, /login podría
+			// servir el formulario de /register y `method="post"` —que ambas
+			// tienen— no notaría nada.
+			if !strings.Contains(cuerpo, `action="`+ruta+`"`) {
+				t.Errorf("la página servida en %s no apunta a %s: ¿se está sirviendo la otra?", ruta, ruta)
 			}
 		})
 	}
@@ -2324,20 +2341,27 @@ func TestLoginRotaLaSesion(t *testing.T) {
 	}
 }
 
-func TestLoginMalNoDistingueEmailDeContrasena(t *testing.T) {
-	b := entorno(t)
-	usuarioConSesion(t, b)
+func TestLoginMalNoDistingueSiLaCuentaExiste(t *testing.T) {
+	// Se mantiene FIJO lo que el usuario tipea y se varía sólo el estado de la
+	// base. Es la única comparación que aísla la propiedad de seguridad.
+	//
+	// Comparar dos emails DISTINTOS mediría otra cosa: el formulario devuelve
+	// el email tipeado para no obligar a reescribirlo, así que dos entradas
+	// distintas dan cuerpos distintos siempre — sin que eso sea una fuga. Lo
+	// que el atacante observa es una respuesta a UNA entrada suya, y esa
+	// respuesta no puede depender de si la cuenta existe.
+	conCuenta := entorno(t)
+	usuarioConSesion(t, conCuenta) // acá sí existe ana@ejemplo.cl
+	sinCuenta := entorno(t)        // acá no existe ninguna cuenta
 
-	inexistente := enviarFormulario(b, "/login", url.Values{
-		"email":      {"nadie@ejemplo.cl"},
-		"contrasena": {"contrasena-larga"},
-	}, nil)
-	malaClave := enviarFormulario(b, "/login", url.Values{
+	tipeado := url.Values{
 		"email":      {"ana@ejemplo.cl"},
 		"contrasena": {"otra-cosa-larga"},
-	}, nil)
+	}
+	existe := enviarFormulario(conCuenta, "/login", tipeado, nil)
+	noExiste := enviarFormulario(sinCuenta, "/login", tipeado, nil)
 
-	for nombre, w := range map[string]*httptest.ResponseRecorder{"inexistente": inexistente, "clave mala": malaClave} {
+	for nombre, w := range map[string]*httptest.ResponseRecorder{"existe": existe, "no existe": noExiste} {
 		if w.Code != http.StatusUnauthorized {
 			t.Errorf("%s: código = %d, quiero 401", nombre, w.Code)
 		}
@@ -2345,8 +2369,28 @@ func TestLoginMalNoDistingueEmailDeContrasena(t *testing.T) {
 			t.Errorf("%s: se emitió cookie de sesión", nombre)
 		}
 	}
-	if inexistente.Body.String() != malaClave.Body.String() {
-		t.Error("los cuerpos difieren: el mensaje revela si el email existe")
+	if existe.Body.String() != noExiste.Body.String() {
+		t.Error("los cuerpos difieren según exista la cuenta: la respuesta revela cuáles están registradas")
+	}
+}
+
+func TestLoginFallidoConservaElEmailTipeado(t *testing.T) {
+	// Perder el email en cada intento fallido obliga a reescribirlo, y es
+	// justo donde más molesta. No es una fuga: el valor lo acaba de escribir
+	// quien mira la página.
+	b := entorno(t)
+	usuarioConSesion(t, b)
+
+	w := enviarFormulario(b, "/login", url.Values{
+		"email":      {"ana@ejemplo.cl"},
+		"contrasena": {"otra-cosa-larga"},
+	}, nil)
+
+	if !strings.Contains(w.Body.String(), "ana@ejemplo.cl") {
+		t.Error("se perdió el email tipeado tras un login fallido")
+	}
+	if strings.Contains(w.Body.String(), "otra-cosa-larga") {
+		t.Error("la contraseña volvió al HTML: nunca debe hacerlo")
 	}
 }
 
@@ -2442,8 +2486,12 @@ func TestRegistroSinCamposNoEs500(t *testing.T) {
 	}
 }
 
-func TestValidacionSenalaElCampo(t *testing.T) {
+func TestValidacionMarcaElCampoQueFallo(t *testing.T) {
 	// cuenta.ErrorValidacion trae el campo justamente para poder resaltarlo.
+	//
+	// La aserción mira la MARCA sobre el input, no el texto del mensaje: con el
+	// texto, borrar el campo Campo entero dejaría el test en verde mientras la
+	// señal visual desaparecía de la página sin que nadie se enterara.
 	b := entorno(t)
 	w := enviarFormulario(b, "/register", url.Values{
 		"nombre":     {"Ana"},
@@ -2451,8 +2499,13 @@ func TestValidacionSenalaElCampo(t *testing.T) {
 		"contrasena": {"corta"},
 	}, nil)
 
-	if !strings.Contains(w.Body.String(), "contrase") {
-		t.Errorf("el error no menciona el campo de la contraseña: %q", w.Body.String())
+	cuerpo := w.Body.String()
+	if !strings.Contains(cuerpo, `id="contrasena" name="contrasena" type="password" class="malo"`) {
+		t.Errorf("el input de la contraseña no quedó marcado:
+%s", cuerpo)
+	}
+	if strings.Contains(cuerpo, `id="email" name="email" type="email" class="malo"`) {
+		t.Error("se marcó el input del email, que era válido")
 	}
 }
 ```
@@ -2496,13 +2549,13 @@ Expected: FAIL — las rutas no existen.
     {{if .Error}}<p class="aviso" role="alert">{{.Error}}</p>{{end}}
 
     <label for="nombre">Nombre</label>
-    <input id="nombre" name="nombre" type="text" value="{{.Nombre}}" autocomplete="name" required autofocus>
+    <input id="nombre" name="nombre" type="text" class="{{if eq .Campo "nombre"}}malo{{end}}" value="{{.Nombre}}" autocomplete="name" required autofocus>
 
     <label for="email">Email</label>
-    <input id="email" name="email" type="email" value="{{.Email}}" autocomplete="email" required>
+    <input id="email" name="email" type="email" class="{{if eq .Campo "email"}}malo{{end}}" value="{{.Email}}" autocomplete="email" required>
 
     <label for="contrasena">Contraseña</label>
-    <input id="contrasena" name="contrasena" type="password" autocomplete="new-password" minlength="8" required>
+    <input id="contrasena" name="contrasena" type="password" class="{{if eq .Campo "contraseña"}}malo{{end}}" autocomplete="new-password" minlength="8" required>
     <p class="pista">Mínimo 8 caracteres.</p>
 
     <button type="submit">Crear cuenta</button>
@@ -2552,7 +2605,9 @@ Expected: FAIL — las rutas no existen.
   </div>
 </header>
 
-<main class="escenario">
+<!-- La URL del playlist vive en el HTML, no en JavaScript: el servidor es
+     quien conoce su arbol de rutas. La Task 7 la lee desde aca. -->
+<main class="escenario" data-playlist="/live/stream.m3u8">
   <div class="marco">
     <video id="video" playsinline controls autoplay muted></video>
   </div>
@@ -3488,6 +3543,13 @@ input {
 input:focus-visible {
   outline: 2px solid var(--acento);
   outline-offset: 1px;
+}
+
+/* El campo que falló la validación. cuenta.ErrorValidacion trae cuál es
+   justamente para poder señalarlo en vez de dejar al usuario buscándolo. */
+input.malo {
+  border-color: var(--error);
+  background: rgba(255, 138, 138, .08);
 }
 
 button {
