@@ -373,7 +373,9 @@ convencido de haber configurado algo que nunca se aplicó."
 
 Descartar un evento no cuesta nada real: el siguiente llega en segundos y **trae el estado completo**, no un delta. Esa es la propiedad que hace legítimo el descarte.
 
-**Por qué el hub recuerda el último evento:** al conectarse, un cliente nuevo tendría que esperar hasta la próxima rotación (hasta 10 s) para ver algo. El dueño le manda el último estado conocido de inmediato. También lo usa para reconstruir el evento cuando lo único que cambió es el número de espectadores.
+**Por qué el hub recuerda el último evento:** al conectarse, un cliente nuevo tendría que esperar hasta la próxima rotación (hasta 10 s) para ver algo. El dueño difunde el último estado conocido en cuanto lo registra, y como el recién llegado ya está en el conjunto, esa única difusión lo alcanza a él y de paso le lleva el contador nuevo al resto. El mismo valor sirve para reconstruir el evento cuando lo único que cambió es el número de espectadores.
+
+**Por qué `Suscribir` espera a que el alta se procese:** cuando vuelve, el cliente ya está en el conjunto, `Espectadores()` ya lo cuenta y el estado vigente ya está en su canal. Sin esa espera, quien se suscribe corre contra la goroutine dueña: leería un contador que todavía no lo incluye, o vería el evento de alta llegar tarde, detrás de otro publicado después. Cuesta un viaje de ida y vuelta por espectador —no por rotación— y elimina toda esa clase de carreras.
 
 - [ ] **Step 1: Escribir los tests que fallan**
 
@@ -385,13 +387,16 @@ package viewers
 import (
 	"context"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 // esperarA reintenta hasta que la condición se cumple o se agota el plazo.
-// El hub es asíncrono: afirmar inmediatamente después de Suscribir sería una
-// carrera contra la goroutine dueña.
+//
+// Suscribir es síncrono —cuando vuelve, el alta ya está hecha— pero la baja y
+// la difusión no lo son: afirmar sobre ellas inmediatamente sería una carrera
+// contra la goroutine dueña.
 func esperarA(t *testing.T, motivo string, cond func() bool) {
 	t.Helper()
 	limite := time.Now().Add(time.Second)
@@ -469,11 +474,20 @@ func TestHubClienteLentoNoBloqueaALosDemas(t *testing.T) {
 	h := NewHub()
 	go h.Run(ctx)
 
-	lento, salirLento := h.Suscribir() // nunca se lee
+	lento, salirLento := h.Suscribir() // nunca se lee: es el cliente atascado
 	defer salirLento()
 	rapido, salirRapido := h.Suscribir()
 	defer salirRapido()
-	drenar(rapido)
+
+	// El cliente rápido necesita un lector ACTIVO. Sin él su buffer se llenaría
+	// igual que el del lento, y el test no distinguiría "el hub descartó por
+	// lento" de "el hub se detuvo" — que es justamente lo que viene a separar.
+	var ultimoVisto atomic.Int64
+	go func() {
+		for e := range rapido {
+			ultimoVisto.Store(e.Secuencia)
+		}
+	}()
 
 	// Muchos más eventos que la capacidad del buffer por cliente.
 	const n = 500
@@ -495,19 +509,13 @@ func TestHubClienteLentoNoBloqueaALosDemas(t *testing.T) {
 		t.Errorf("el cliente lento acumuló %d eventos, el tope es %d", l, capacidadCliente)
 	}
 
-	// Y el rápido sigue vivo y recibiendo.
-	h.Publicar(Evento{Secuencia: 9999})
+	// Y el hub sigue aceptando y entregando. Se republica en cada intento
+	// porque Publicar descarta cuando el canal de difusión está lleno, y tras
+	// una ráfaga de 500 puede estarlo: un único intento haría el test
+	// intermitente por la razón equivocada.
 	esperarA(t, "que el cliente rápido siga recibiendo", func() bool {
-		for {
-			select {
-			case e := <-rapido:
-				if e.Secuencia == 9999 {
-					return true
-				}
-			default:
-				return false
-			}
-		}
+		h.Publicar(Evento{Secuencia: 9999})
+		return ultimoVisto.Load() == 9999
 	})
 }
 
@@ -685,6 +693,15 @@ type Evento struct {
 
 type cliente struct {
 	ch chan Evento
+
+	// listo lo cierra la goroutine dueña cuando terminó de registrar a este
+	// cliente y de difundir su alta. Suscribir lo espera, y con eso ofrece una
+	// garantía que vale la pena: cuando vuelve, el cliente YA está en el
+	// conjunto, Espectadores() ya lo cuenta, y el estado vigente ya está en su
+	// canal. Sin esa espera, quien se suscribe corre contra la goroutine dueña
+	// y puede leer un contador viejo o encontrarse el evento de alta llegando
+	// tarde, detrás de otro que pidió después.
+	listo chan struct{}
 }
 
 // Hub reparte eventos a los espectadores conectados.
@@ -734,11 +751,20 @@ func (h *Hub) Publicar(e Evento) {
 
 // Suscribir registra un espectador y devuelve su canal y su función de baja.
 //
+// Cuando vuelve, el alta ya está hecha: el cliente está en el conjunto, el
+// contador lo incluye y el estado vigente ya está en su canal. Esa sincronía
+// cuesta un viaje de ida y vuelta por evento de suscripción —algo que pasa una
+// vez por espectador, no por rotación— y a cambio elimina toda una clase de
+// carreras entre quien se suscribe y la goroutine dueña.
+//
 // El canal es de sólo lectura: el que escribe es siempre la goroutine dueña.
 // La función de baja es idempotente y segura de llamar aunque el hub ya se
 // haya apagado.
 func (h *Hub) Suscribir() (<-chan Evento, func()) {
-	c := &cliente{ch: make(chan Evento, capacidadCliente)}
+	c := &cliente{
+		ch:    make(chan Evento, capacidadCliente),
+		listo: make(chan struct{}),
+	}
 
 	select {
 	case h.alta <- c:
@@ -748,6 +774,14 @@ func (h *Hub) Suscribir() (<-chan Evento, func()) {
 		// vez de quedarse esperando eventos que no van a llegar nunca.
 		close(c.ch)
 		return c.ch, func() {}
+	}
+
+	// El alta ya fue aceptada; falta que la goroutine dueña termine de
+	// procesarla. El caso de h.terminado cubre que Run se apague justo en esa
+	// ventana: sin él, esta espera no volvería nunca.
+	select {
+	case <-c.listo:
+	case <-h.terminado:
 	}
 
 	var una sync.Once
@@ -790,8 +824,14 @@ func (h *Hub) Run(ctx context.Context) {
 			clientes[c] = struct{}{}
 			ultimo.Espectadores = int64(len(clientes))
 			h.espectadores.Store(ultimo.Espectadores)
-			enviar(c, ultimo)          // estado inmediato para el recién llegado
-			difundirA(clientes, ultimo) // y el contador nuevo para el resto
+			// Una sola difusión, no dos: el recién llegado YA está en el
+			// conjunto, así que difundirA le entrega el estado vigente al
+			// mismo tiempo que al resto el contador nuevo. Mandárselo aparte
+			// además de esto le entregaría el mismo evento dos veces.
+			difundirA(clientes, ultimo)
+			// Recién ahora Suscribir puede volver: el cliente está registrado,
+			// contado y con el estado vigente en su canal.
+			close(c.listo)
 
 		case c := <-h.baja:
 			if _, existe := clientes[c]; !existe {
