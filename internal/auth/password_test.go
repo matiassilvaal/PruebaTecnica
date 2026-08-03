@@ -59,6 +59,28 @@ func TestVerifyPasswordHashInvalido(t *testing.T) {
 	}
 }
 
+// TestVerificarEnVacioUsaCostoDeProduccion no mide tiempos: un umbral de
+// tiempo es inevitablemente frágil en CI (máquinas compartidas, sandboxes
+// virtualizados, GC del runtime) y un falso rojo intermitente entrena a
+// ignorar la suite, que es peor que no tener el test. En cambio verifica
+// directamente lo que hace que la mitigación funcione: que el hash de
+// referencia contra el que compara sea de costo CostoBcrypt (12), el mismo
+// costo que paga una verificación real. Si alguien lo bajara a MinCost "para
+// que los tests vayan rápido", VerificarEnVacio dejaría de disimular nada, y
+// este test lo atraparía sin depender del reloj.
+func TestVerificarEnVacioUsaCostoDeProduccion(t *testing.T) {
+	costo, err := bcrypt.Cost([]byte(hashReferencia))
+	if err != nil {
+		t.Fatalf("leyendo el costo del hash de referencia: %v", err)
+	}
+	if costo != CostoBcrypt {
+		t.Errorf("hash de referencia con costo %d, quiero %d", costo, CostoBcrypt)
+	}
+	// No debe panicar ni devolver true por accidente contra una contraseña
+	// que no coincide con nada.
+	VerificarEnVacio()
+}
+
 func TestCostoDeProduccionEs12(t *testing.T) {
 	// Este es el ÚNICO test que paga el costo real, para dejar constancia de
 	// que la constante de producción es la que se cree.
