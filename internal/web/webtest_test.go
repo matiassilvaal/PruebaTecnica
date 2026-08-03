@@ -30,6 +30,12 @@ type banco struct {
 	Guard    *auth.Guard
 	Sesiones *auth.Sessions
 	Usuarios *cuenta.Store
+
+	// Registro acumula lo que el middleware de logging escribiría a stderr.
+	// Mandarlo a un buffer en vez de os.Stderr evita que la línea por petición
+	// entierre la salida de `go test`; los tests que necesiten inspeccionar el
+	// log lo leen de acá.
+	Registro *bufferDeLog
 }
 
 // hashBarato reemplaza a auth.HashPassword en los tests.
@@ -64,15 +70,17 @@ func entorno(t *testing.T) *banco {
 	go hub.Run(ctx)
 	t.Cleanup(cancelar)
 
+	registro := &bufferDeLog{}
 	b := &banco{
 		Motor: motor, Pool: pool, Hub: hub,
 		Guard: guard, Sesiones: sesiones, Usuarios: usuarios,
+		Registro: registro,
 	}
 	b.Handler = NewRouter(Deps{
 		Motor: motor, Pool: pool, Hub: hub,
 		Guard: guard, Sesiones: sesiones, Usuarios: usuarios,
 		Salud: func(context.Context) error { return nil },
-		Log:   log.New(os.Stderr, "test: ", 0),
+		Log:   log.New(registro, "test: ", 0),
 	})
 	return b
 }

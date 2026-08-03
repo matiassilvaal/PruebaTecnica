@@ -9,9 +9,11 @@
   </div>
 </header>
 
-<main class="escenario">
+<!-- La URL del playlist vive en el HTML, no en JavaScript: el servidor es
+     quien conoce su arbol de rutas. La Task 7 la lee desde aca. -->
+<main class="escenario" data-playlist="/live/stream.m3u8">
   <div class="marco">
-    <video id="video" playsinline controls autoplay muted data-src="/live/stream.m3u8"></video>
+    <video id="video" playsinline controls autoplay muted></video>
   </div>
 </main>
 {{end}}

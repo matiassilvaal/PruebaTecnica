@@ -9,13 +9,13 @@
     {{if .Error}}<p class="aviso" role="alert">{{.Error}}</p>{{end}}
 
     <label for="nombre">Nombre</label>
-    <input id="nombre" name="nombre" type="text" value="{{.Nombre}}" autocomplete="name" required autofocus>
+    <input id="nombre" name="nombre" type="text" class="{{if eq .Campo "nombre"}}malo{{end}}" value="{{.Nombre}}" autocomplete="name" required autofocus>
 
     <label for="email">Email</label>
-    <input id="email" name="email" type="email" value="{{.Email}}" autocomplete="email" required>
+    <input id="email" name="email" type="email" class="{{if eq .Campo "email"}}malo{{end}}" value="{{.Email}}" autocomplete="email" required>
 
     <label for="contrasena">Contraseña</label>
-    <input id="contrasena" name="contrasena" type="password" autocomplete="new-password" minlength="8" required>
+    <input id="contrasena" name="contrasena" type="password" class="{{if eq .Campo "contraseña"}}malo{{end}}" autocomplete="new-password" minlength="8" required>
     <p class="pista">Mínimo 8 caracteres.</p>
 
     <button type="submit">Crear cuenta</button>

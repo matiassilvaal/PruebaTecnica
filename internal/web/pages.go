@@ -167,19 +167,14 @@ func (p *manejadorPaginas) loginEnviar(w http.ResponseWriter, r *http.Request) {
 		// tarda ~370 ms, y esa diferencia revela qué cuentas existen aunque el
 		// mensaje sea idéntico.
 		auth.VerificarEnVacio()
-		// El email NO se re-renderiza acá: si lo hiciera, dos intentos fallidos
-		// con emails distintos devolverían cuerpos distintos (por el valor
-		// tipeado en el campo), y eso delataría lo mismo que el mensaje
-		// idéntico intenta ocultar. Por eso datosFormulario va vacío salvo el
-		// mensaje genérico.
 		p.render(w, "login", http.StatusUnauthorized,
-			datosFormulario{Error: mensajeCredenciales})
+			datosFormulario{Email: email, Error: mensajeCredenciales})
 		return
 	}
 
 	if !auth.VerifyPassword(hash, clave) {
 		p.render(w, "login", http.StatusUnauthorized,
-			datosFormulario{Error: mensajeCredenciales})
+			datosFormulario{Email: email, Error: mensajeCredenciales})
 		return
 	}
 
