@@ -36,13 +36,13 @@ zapping-live/
 │   ├── storage/
 │   │   ├── db.go               apertura de SQLite, pragmas
 │   │   └── migrate.go          esquema
-│   ├── user/
-│   │   ├── user.go             modelo + validación
+│   ├── cuenta/
+│   │   ├── cuenta.go           modelo + validación + alta (Registrar)
 │   │   └── store.go            CRUD sobre SQLite
 │   ├── auth/
 │   │   ├── password.go         bcrypt
 │   │   ├── session.go          creación, lookup y expiración de sesiones
-│   │   └── middleware.go       RequireAuth
+│   │   └── guard.go            RequirePage / RequireAPI
 │   ├── hls/
 │   │   ├── pool.go             parseo del manifiesto + tabla acumulada
 │   │   ├── snapshot.go         Snapshot inmutable + render del .m3u8
@@ -64,7 +64,7 @@ zapping-live/
 ```
 
 **Regla de dependencias:** `web` depende de `hls`, `auth`, `viewers`. Ninguno de esos tres
-depende de `web` ni conoce `net/http` como concepto de dominio (salvo `auth/middleware.go`,
+depende de `web` ni conoce `net/http` como concepto de dominio (salvo `auth/guard.go`,
 que por definición es HTTP). En particular **`hls` no sabe que existe HTTP**: expone un
 snapshot y un lector de segmentos, y nada más. Eso es lo que lo hace testeable sin levantar
 un servidor.
@@ -96,18 +96,23 @@ CREATE TABLE users (
     name          TEXT    NOT NULL,
     email         TEXT    NOT NULL UNIQUE,
     password_hash TEXT    NOT NULL,
-    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at    INTEGER NOT NULL
 );
 
 CREATE TABLE sessions (
-    token_hash TEXT     PRIMARY KEY,
-    user_id    INTEGER  NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at DATETIME NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    token_hash TEXT    PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
 );
 
 CREATE INDEX idx_sessions_expires ON sessions(expires_at);
 ```
+
+Las columnas de fecha son `INTEGER` con segundos Unix (`time.Time.Unix()`), no `DATETIME`:
+SQLite no tiene un tipo de fecha nativo, y un entero ordena sin ambigüedad para las consultas
+de expiración. Sin `DEFAULT`: el valor lo pone el código Go al insertar (`time.Now().Unix()`),
+no la base. Detalle y justificación completa en [03-auth-y-db.md](03-auth-y-db.md).
 
 En `sessions` se guarda el **SHA-256 del token**, no el token. Una filtración de la base
 entrega hashes inservibles en vez de sesiones activas.
@@ -148,7 +153,11 @@ Tres decisiones concretas, porque es un criterio explícito de evaluación:
 - **Arranque:** si falta la carpeta de segmentos o el manifiesto, el servidor **no levanta**
   e informa exactamente qué falta. Preferible a un servidor arriba sirviendo 404s.
 - **Login:** mensaje genérico ("credenciales inválidas") tanto si el email no existe como si
-  la contraseña es incorrecta, para no filtrar qué emails están registrados.
+  la contraseña es incorrecta, para no filtrar qué emails están registrados. El mensaje
+  genérico no alcanza por sí solo: un email inexistente nunca llega a bcrypt y responde en
+  microsegundos, mientras uno existente paga el costo real de la verificación. El handler paga
+  ese mismo costo con `auth.VerificarEnVacio()` cuando el email no existe, para que el tiempo
+  de respuesta no delate la diferencia (detalle en [03-auth-y-db.md](03-auth-y-db.md)).
 - **Registro:** email duplicado, formato inválido y contraseña corta con mensajes distintos.
 - **Segmento inexistente:** 404 y log, sin tumbar el stream.
 - **Cliente SSE lento:** canal con buffer acotado; si se llena, se descarta el mensaje en vez

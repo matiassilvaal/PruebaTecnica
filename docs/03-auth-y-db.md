@@ -23,8 +23,10 @@ Pragmas al abrir, cada uno por una razón:
 | `foreign_keys` | `ON` | SQLite las ignora por defecto; sin esto el `ON DELETE CASCADE` no actúa |
 | `synchronous` | `NORMAL` | Suficiente con WAL, y bastante más rápido que `FULL` |
 
-`db.SetMaxOpenConns(1)` para las escrituras no es necesario con WAL, pero sí conviene
-`SetMaxIdleConns` razonable. SQLite es un archivo, no un servidor: el pool se mantiene chico.
+SQLite es un archivo, no un servidor: el pool se mantiene chico. En concreto:
+`SetMaxOpenConns(8)`, `SetMaxIdleConns(4)`, `SetConnMaxIdleTime(5 * time.Minute)`. Con WAL no
+hace falta forzar `SetMaxOpenConns(1)` para las escrituras: SQLite serializa los escritores
+internamente y `busy_timeout` absorbe la contención en vez de devolver `SQLITE_BUSY`.
 
 ## Migraciones
 
@@ -87,7 +89,19 @@ func NewStore(db *sql.DB) *Store
 func (s *Store) Crear(ctx context.Context, name, email, hash string) (*Usuario, error)
 func (s *Store) PorEmail(ctx context.Context, email string) (*Usuario, string, error) // usuario + hash
 func (s *Store) PorID(ctx context.Context, id int64) (*Usuario, error)
+
+func Registrar(ctx context.Context, s *Store, hash func(string) (string, error),
+    name, email, password string) (*Usuario, error)
 ```
+
+`Crear` es la vía de bajo nivel: recibe el hash ya calculado y no valida nada, así que nada
+impide llamarla con una contraseña en claro en el tercer argumento. Existe para que los tests
+puedan poblar filas sin pagar el costo de bcrypt. **El alta normal de un usuario pasa por
+`Registrar`**, que valida (`Validar`), hashea (con la función que se le inyecte, típicamente
+`auth.HashPassword`) y persiste en un solo paso — así ningún punto de entrada puede saltarse
+la validación. `Registrar` recibe la función de hash en vez de importar `auth` directamente
+porque `auth` ya importa `cuenta` (para `cuenta.Store` y `cuenta.Usuario` en el guard); importar
+en el otro sentido sería un ciclo.
 
 `Usuario` **no tiene campo de contraseña**. El hash se devuelve aparte, sólo donde se necesita
 verificarlo. Así es imposible filtrarlo por accidente al renderizar un template o serializar
@@ -95,7 +109,10 @@ a JSON.
 
 ### Validación
 
-En `cuenta/cuenta.go`, no en los handlers, para que sea la misma en cualquier punto de entrada:
+En `cuenta/cuenta.go`, no en los handlers, para que sea la misma en cualquier punto de entrada.
+Eso sólo se sostiene si hay un único camino para dar de alta un usuario: `Registrar` es ese
+camino (ver arriba) y es quien de verdad llama a `Validar` antes de persistir — `Store.Crear`
+por sí sola no lo hace.
 
 | Campo | Regla | Mensaje |
 | --- | --- | --- |
@@ -124,13 +141,27 @@ const CostoBcrypt = 12
 
 func HashPassword(plain string) (string, error)      // bcrypt.GenerateFromPassword, costo CostoBcrypt
 func VerifyPassword(hash, plain string) bool         // bcrypt.CompareHashAndPassword
+func VerificarEnVacio()                              // compara contra un hash de referencia, mismo costo
 ```
 
-Costo 12: unos ~250 ms por verificación en hardware moderno, que es el punto de equilibrio
-recomendado entre resistencia a fuerza bruta y latencia tolerable en un login.
+Costo 12: el punto de equilibrio recomendado entre resistencia a fuerza bruta y latencia
+tolerable en un login. `TestCostoDeProduccionEs12` es el único test que paga el costo real (los
+demás usan `bcrypt.MinCost` para no volver lenta la suite) y sirve de referencia medida: ronda
+los **~0,37 s** en la máquina donde corre esta suite — coherente con el orden de magnitud
+esperado para costo 12, aunque el número exacto depende del hardware.
 
 bcrypt genera la sal y codifica el costo **dentro del propio string del hash**, así que se
 guarda una sola columna y no hay formato propio que mantener.
+
+**Enumeración de usuarios por tiempo:** el mensaje de error del login es genérico tanto si el
+email no existe como si la contraseña es incorrecta, pero eso no alcanza por sí solo: un email
+inexistente nunca llega a bcrypt (responde en microsegundos) mientras uno existente paga el
+costo real de `VerifyPassword` (el orden de los ~0,37 s medidos arriba). El reloj delata la
+diferencia aunque el mensaje sea idéntico. `VerificarEnVacio()` compara contra un hash de
+referencia (generado una única vez al cargar el paquete, con el mismo `CostoBcrypt`) para que
+el handler de login pague ese mismo costo cuando el email no existe. Generar el hash de
+referencia en cada llamada en vez de una sola vez duplicaría el costo de esa rama y
+reintroduciría la misma asimetría que la función busca evitar.
 
 ## `internal/auth` — sesiones
 
@@ -147,12 +178,21 @@ type Sessions struct {
 func NewSessions(db *sql.DB, ttl time.Duration, opts ...OpcionSesion) *Sessions
 func ConReloj(now func() time.Time) OpcionSesion   // inyecta el reloj para tests
 
+func (s *Sessions) TTL() time.Duration                                              // única fuente de verdad del TTL
 func (s *Sessions) Crear(ctx context.Context, userID int64) (token string, err error)
-func (s *Sessions) Resolver(ctx context.Context, token string) (userID int64, ok bool)
+func (s *Sessions) Resolver(ctx context.Context, token string) (userID int64, ok bool, err error)
 func (s *Sessions) Destruir(ctx context.Context, token string) error
 func (s *Sessions) DestruirDeUsuario(ctx context.Context, userID int64) error   // previene session fixation
 func (s *Sessions) Limpiar(ctx context.Context) (n int64, err error)           // borra expiradas
 ```
+
+`Resolver` distingue "no hay sesión" de "la base falló": `(0, false, nil)` es la respuesta
+normal ante un token inválido o expirado; el error sólo viaja cuando la consulta a la base
+falla de verdad (por ejemplo, SQLite caído). Colapsar ambos casos en un mismo `(0, false)`
+—como hacía una versión anterior— hacía que `RequirePage` mandara a `/login` tanto por falta de
+sesión como por una base caída: el usuario reintenta, vuelve a fallar, y entra en un bucle de
+redirección sin una sola línea de log que explique la causa real. `Guard.proteger` loguea ese
+error con `log.Printf` antes de rechazar la petición.
 
 **Ciclo de vida del token:**
 
@@ -181,9 +221,14 @@ http.Cookie{
     HttpOnly: true,                    // inaccesible desde JavaScript
     SameSite: http.SameSiteLaxMode,    // mitiga CSRF en navegación cruzada
     Secure:   cfg.SecureCookies,       // true tras HTTPS; configurable para probar en local
-    MaxAge:   int(ttl.Seconds()),
+    MaxAge:   int(g.sesiones.TTL().Seconds()),
 }
 ```
+
+El TTL sale de `Sessions.TTL()`, no se recibe por parámetro en `PonerCookie`: si `Guard` y
+`Sessions` tuvieran cada uno su propia copia del TTL, un descuido al construirlos con valores
+distintos dejaría la cookie y la fila en la base caducando en momentos diferentes. Una sola
+fuente de verdad evita esa clase de bug por construcción.
 
 ## Middleware
 
@@ -197,7 +242,7 @@ func NewGuard(s *Sessions, u *cuenta.Store, cookiesSeguras bool) *Guard
 
 func (g *Guard) RequirePage(next http.Handler) http.Handler   // sin sesión → 302 a /login
 func (g *Guard) RequireAPI(next http.Handler) http.Handler    // sin sesión → 401
-func (g *Guard) PonerCookie(w http.ResponseWriter, token string, ttl time.Duration)
+func (g *Guard) PonerCookie(w http.ResponseWriter, token string)   // TTL sale de g.sesiones.TTL()
 func (g *Guard) BorrarCookie(w http.ResponseWriter)
 
 func UsuarioDe(ctx context.Context) (*cuenta.Usuario, bool)
@@ -242,8 +287,8 @@ válido después.
 
 ## Tests
 
-**`internal/auth`** — contraseñas, sesiones y el guard (`password_test.go`, `session_test.go`,
-`guard_test.go`):
+**`internal/auth`** — contraseñas, sesiones, el guard y la cadena completa (`password_test.go`,
+`session_test.go`, `guard_test.go`, `integration_test.go`):
 
 | Test | Qué verifica |
 | --- | --- |
@@ -252,22 +297,26 @@ válido después.
 | `TestHashNoContieneLaContraseña` | El string del hash no contiene la contraseña en claro |
 | `TestVerifyPasswordHashInvalido` | Un hash corrupto no revienta, sólo devuelve `false` |
 | `TestCostoDeProduccionEs12` | `HashPassword` usa `CostoBcrypt = 12`, no el costo mínimo de test |
+| `TestVerificarEnVacioUsaCostoDeProduccion` | El hash de referencia de `VerificarEnVacio` es de costo 12; no mide tiempos (ver más arriba por qué) |
+| `TestTTL` | `Sessions.TTL()` devuelve la vigencia configurada |
 | `TestCrearYResolver` | Un token recién creado resuelve al usuario correcto |
 | `TestTokensDistintosCadaVez` | Dos tokens seguidos no coinciden (entropía real) |
 | `TestElTokenNoSeGuardaEnClaro` | La columna `token_hash` no contiene el token emitido |
-| `TestSesionExpirada` | Pasado el TTL, `Resolver` devuelve `ok=false` |
+| `TestSesionExpirada` | Dentro del TTL resuelve; **exactamente** en el borde del TTL, `ok=false` |
+| `TestSesionExpiradaPasadoElBorde` | Bien pasado el TTL, `ok=false` |
 | `TestResolverTokenInvalido` | Un token que no existe no resuelve |
 | `TestDestruir` | Tras `Destruir` el token deja de resolver |
-| `TestDestruirDeUsuario` | Borra todas las sesiones de un usuario, no las de otros |
+| `TestDestruirDeUsuario` | Borra las sesiones de un usuario sin tocar las de un SEGUNDO usuario (`WHERE user_id` protegido) |
 | `TestLimpiarBorraSoloLasExpiradas` | Borra sólo las expiradas y deja intactas las vigentes |
 | `TestRequirePageSinCookieRedirige` | Sin cookie, `RequirePage` → 302 a `/login` |
 | `TestRequireAPISinCookieDevuelve401` | Sin cookie, `RequireAPI` → 401, sin `Location` |
 | `TestConSesionValidaPasaYPoneElUsuarioEnContexto` | Con sesión, ambos middlewares dejan pasar y ponen el usuario en el contexto |
 | `TestTokenInventadoNoPasa` | Un token inventado no da acceso |
 | `TestSesionHuerfanaNoPasa` | Sesión cuyo usuario fue borrado: el guard rechaza, no explota |
-| `TestCookieTieneLosAtributosDeSeguridad` | `PonerCookie` usa `HttpOnly`, `SameSite=Lax`, `Path=/` y el `MaxAge` correcto |
+| `TestCookieTieneLosAtributosDeSeguridad` | `PonerCookie` usa `HttpOnly`, `SameSite=Lax`, `Path=/` y el `MaxAge` correcto (TTL de `Sessions.TTL()`) |
 | `TestBorrarCookieLaExpira` | `BorrarCookie` pone `MaxAge` negativo |
 | `TestUsuarioDeSinContexto` | Un contexto sin usuario devuelve `ok=false` |
+| `TestFlujoCompletoDeAutenticacion` | Cadena completa: `Registrar` → `password_hash` empieza con `$2` → login válido pasa `RequirePage` → contraseña incorrecta no valida → logout invalida la cookie |
 
 **`internal/cuenta`** — el modelo y su store (`cuenta_test.go`, `store_test.go`):
 
@@ -284,16 +333,27 @@ válido después.
 | `TestCrearEmailDuplicado` | `Ana@X.com` y `ana@x.com` colisionan en el `UNIQUE` (`ErrEmailEnUso`) |
 | `TestPorEmailInexistente` | Devuelve `ErrNoEncontrado`, no un error genérico |
 | `TestPorID` | Recupera un usuario por su clave primaria |
+| `TestRegistrarRechazaDatosInvalidosSinTocarLaBase` | Datos inválidos: `Registrar` no llama a la función de hash ni inserta ninguna fila |
+| `TestRegistrarValidaHasheaYPersiste` | `Registrar` normaliza el email y persiste lo que devuelve la función de hash |
+| `TestCreatedAtRoundTripEntreCrearYLecturas` | El `CreatedAt` de `Crear` coincide con el que devuelven `PorEmail` y `PorID` |
 | `TestUserNoExponeElHash` | `Usuario` no tiene ningún campo con la contraseña o su hash |
 
 Los tests de `internal/storage`, `internal/cuenta` y `internal/auth` abren la base con
-`storagetest.Abrir`/`AbrirMigrada`, que crea un **archivo temporal** vía `t.TempDir()` — no
-`:memory:`. Con un pool de conexiones cada conexión nueva abriría su propia base en memoria
-independiente (SQLite en memoria es por-conexión, no compartida), así que dos consultas del
-mismo test podrían terminar viendo datos distintos. Además `journal_mode=WAL`, uno de los
-pragmas que se fija al abrir, no aplica a bases en memoria. Un archivo en un directorio
-temporal (borrado automáticamente al terminar el test) da el comportamiento real sin dejar
-residuos.
+`storagetest.Abrir`/`AbrirMigrada`, que crea un **archivo temporal propio** (`os.MkdirTemp`,
+no `t.TempDir()`) — y nunca `:memory:`. Con un pool de conexiones cada conexión nueva abriría
+su propia base en memoria independiente (SQLite en memoria es por-conexión, no compartida), así
+que dos consultas del mismo test podrían terminar viendo datos distintos. Además
+`journal_mode=WAL`, uno de los pragmas que se fija al abrir, no aplica a bases en memoria. Un
+archivo en un directorio temporal da el comportamiento real sin dejar residuos.
+
+El directorio se borra explícitamente en `t.Cleanup` con reintentos con backoff exponencial, en
+vez de dejar que `t.TempDir()` lo borre por su cuenta: en Windows, al cerrar el último handle de
+SQLite, el antivirus abre el archivo un instante para escanearlo, y el `rmdir` del directorio
+puede fallar con `ERROR_DIR_NOT_EMPTY` — una clase de error que `testing.removeAll` no reintenta
+(sólo reintenta `ACCESS_DENIED` y `SHARING_VIOLATION`). Sin este arreglo, la suite fallaba de
+forma intermitente (~0,5 % de los directorios) con
+`TempDir RemoveAll cleanup: unlinkat ...: The directory is not empty`. Verificado con
+`go test ./internal/storage/... -count=50` sin fallos.
 
 El TTL de sesión se inyecta (`ConReloj`) para poder probar la expiración sin esperar el TTL
 real; ningún test de la suite espera más de un segundo real.
