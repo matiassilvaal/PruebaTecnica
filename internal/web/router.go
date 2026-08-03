@@ -53,6 +53,14 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("GET /healthz", salud(d.Salud))
 	mux.Handle("GET /static/", cacheDeAssets(http.FileServerFS(archivosEstaticos)))
 
+	st := &manejadorStream{motor: d.Motor, pool: d.Pool, log: d.Log}
+
+	// Rutas HERMANAS, y eso es un contrato, no un gusto: las URI del .m3u8 son
+	// relativas ("segments/segmentN.ts"). Servir el playlist desde otra ruta
+	// rompe esos enlaces y da 404 silenciosos.
+	mux.Handle("GET /live/stream.m3u8", d.Guard.RequireAPI(http.HandlerFunc(st.playlist)))
+	mux.Handle("GET /live/segments/{name}", d.Guard.RequireAPI(http.HandlerFunc(st.segmento)))
+
 	// El orden importa: registrar por fuera para que la línea de log exista
 	// también cuando el handler entra en pánico y recuperar lo atrapa.
 	return registrar(d.Log, recuperar(d.Log, mux))
