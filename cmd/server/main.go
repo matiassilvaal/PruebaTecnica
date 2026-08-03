@@ -35,6 +35,25 @@ const intervaloLimpieza = time.Hour
 // contexto cierra el hub y sus handlers vuelven.
 const plazoApagado = 10 * time.Second
 
+// nuevoServidor arma el http.Server con sus tiempos límite.
+//
+// Está separado de run() para que un test pueda afirmar sobre esos tiempos:
+// la ausencia de WriteTimeout es una decisión de diseño, y sin un test que la
+// fije, agregarlo un día "por prudencia" cortaría todas las conexiones SSE sin
+// que nada se quejara.
+func nuevoServidor(puerto string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:    ":" + puerto,
+		Handler: h,
+		// Contra slowloris, sin tocar las respuestas largas.
+		ReadHeaderTimeout: 10 * time.Second,
+		// SIN WriteTimeout a propósito: cortaría toda conexión SSE a los pocos
+		// segundos, que es justo lo que este servicio necesita mantener
+		// abierto. El problema que WriteTimeout resuelve —clientes que no
+		// leen— ya está cubierto por el backpressure del hub.
+	}
+}
+
 func main() {
 	registro := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
 	if err := run(registro); err != nil {
@@ -94,25 +113,16 @@ func run(registro *log.Logger) error {
 	go motor.Run(ctx)
 	go limpiarSesiones(ctx, sesiones, intervaloLimpieza, registro)
 
-	srv := &http.Server{
-		Addr: ":" + cfg.Puerto,
-		Handler: web.NewRouter(web.Deps{
-			Motor:    motor,
-			Pool:     pool,
-			Hub:      hub,
-			Guard:    guard,
-			Sesiones: sesiones,
-			Usuarios: usuarios,
-			Salud:    db.PingContext,
-			Log:      registro,
-		}),
-		// Contra slowloris, sin tocar las respuestas largas.
-		ReadHeaderTimeout: 10 * time.Second,
-		// SIN WriteTimeout a propósito: cortaría toda conexión SSE a los pocos
-		// segundos, que es justo lo que este servicio necesita mantener
-		// abierto. El problema que WriteTimeout resuelve —clientes que no
-		// leen— ya está cubierto por el backpressure del hub.
-	}
+	srv := nuevoServidor(cfg.Puerto, web.NewRouter(web.Deps{
+		Motor:    motor,
+		Pool:     pool,
+		Hub:      hub,
+		Guard:    guard,
+		Sesiones: sesiones,
+		Usuarios: usuarios,
+		Salud:    db.PingContext,
+		Log:      registro,
+	}))
 
 	errores := make(chan error, 1)
 	go func() {
