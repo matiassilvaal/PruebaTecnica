@@ -204,6 +204,46 @@ Se asume un proxy inverso por delante en producción. `SECURE_COOKIES` ya está 
 
 ---
 
+## Verificación del bloque 02 (motor HLS)
+
+Comandos con los que se verificó el paquete `internal/hls`. Valen para el README:
+son la evidencia de lo que se afirma, no una promesa.
+
+```bash
+go test ./internal/hls/ -v          # 35/35, en menos de un segundo
+go test ./internal/hls/ -cover      # 97,2 % de cobertura
+go vet ./... && gofmt -l .          # sin hallazgos
+go list -deps ./internal/hls | grep -x net/http   # sin resultados: no conoce HTTP
+```
+
+**Detector de carreras.** `-race` requiere un compilador C, que en Windows no viene con
+Go. Se verifica en un contenedor Linux, que además confirma que la vía Docker del
+requisito 1 funciona:
+
+```bash
+docker run --rm -v "$PWD:/src" -w /src golang:1.26 go test -race ./internal/hls/
+```
+
+Resultado sobre el commit final: **sin advertencias de carrera**. La afirmación de que
+las lecturas son wait-free y no hay estado mutable compartido está verificada
+empíricamente, no sólo argumentada por diseño.
+
+## Restricciones que heredan los bloques siguientes
+
+Salieron de las revisiones del bloque 02 y hay que respetarlas al implementar el resto:
+
+- **`Engine.Run` debe llamarse exactamente una vez** por instancia. La garantía de un solo
+  escritor sobre el estado del motor es una convención documentada, no forzada por código:
+  dos goroutines corriendo `Run` romperían la monotonía de `EXT-X-MEDIA-SEQUENCE`.
+- **El hook `onRotate` corre síncronamente en la goroutine de rotación.** El hub SSE debe
+  reenviar el snapshot a su propio canal sin bloquear: si bloquea, detiene el avance del
+  stream para todos; si entra en pánico, tumba la goroutine del motor.
+- **El playlist debe servirse desde una ruta hermana de `segments/`** — por ejemplo
+  `/live/stream.m3u8` con los segmentos en `/live/segments/`. Las URI del `.m3u8` son
+  relativas; montarlo en otra ruta produce 404 silenciosos.
+- **`Snapshot.Window` y `Snapshot.Playlist` son de sólo lectura.** Mutarlos corrompe el
+  estado que ven todos los lectores concurrentes, porque comparten el array subyacente.
+
 ## Notas para el correo de entrega
 
 Puntos a cubrir, según lo que pidieron explícitamente:
