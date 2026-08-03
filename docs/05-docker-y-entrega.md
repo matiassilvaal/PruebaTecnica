@@ -142,7 +142,7 @@ Lo que el script cubre:
 
 Y aparte, sobre el código:
 
-- [x] `go test ./... -count=1` — 153 tests, 0 fallos.
+- [x] `go test ./... -count=1` — 155 tests, 0 fallos.
 - [x] `go vet ./...` limpio, `gofmt -l .` sin salida.
 - [x] `-race` sin advertencias, en contenedor Linux.
 
