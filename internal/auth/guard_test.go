@@ -183,7 +183,7 @@ func TestSesionHuerfanaNoPasa(t *testing.T) {
 func TestCookieTieneLosAtributosDeSeguridad(t *testing.T) {
 	g, _, _, _ := nuevoGuard(t)
 	rec := httptest.NewRecorder()
-	g.PonerCookie(rec, "un-token", time.Hour)
+	g.PonerCookie(rec, "un-token")
 
 	cookies := rec.Result().Cookies()
 	if len(cookies) != 1 {

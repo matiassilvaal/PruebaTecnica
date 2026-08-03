@@ -31,6 +31,13 @@ func nuevasSesiones(t *testing.T, ttl time.Duration) (*Sessions, *relojFijo, int
 	return NewSessions(db, ttl, ConReloj(reloj.Now)), reloj, id, ctx
 }
 
+func TestTTL(t *testing.T) {
+	s, _, _, _ := nuevasSesiones(t, 90*time.Minute)
+	if got := s.TTL(); got != 90*time.Minute {
+		t.Errorf("TTL() = %v, quiero %v", got, 90*time.Minute)
+	}
+}
+
 func TestCrearYResolver(t *testing.T) {
 	s, _, uid, ctx := nuevasSesiones(t, time.Hour)
 	token, err := s.Crear(ctx, uid)

@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"net/http"
-	"time"
 
 	"zapping-live/internal/cuenta"
 )
@@ -78,8 +77,10 @@ func UsuarioDe(ctx context.Context) (*cuenta.Usuario, bool) {
 	return u, ok
 }
 
-// PonerCookie emite la cookie de sesión.
-func (g *Guard) PonerCookie(w http.ResponseWriter, token string, ttl time.Duration) {
+// PonerCookie emite la cookie de sesión. El TTL sale de g.sesiones.TTL(), no
+// se recibe por parámetro: así hay una sola fuente de verdad y la cookie no
+// puede caducar en un momento distinto de la fila en la base.
+func (g *Guard) PonerCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     NombreCookie,
 		Value:    token,
@@ -87,7 +88,7 @@ func (g *Guard) PonerCookie(w http.ResponseWriter, token string, ttl time.Durati
 		HttpOnly: true,                 // inaccesible desde JavaScript
 		SameSite: http.SameSiteLaxMode, // mitiga CSRF en navegación cruzada
 		Secure:   g.cookiesSeguras,     // true detrás de HTTPS
-		MaxAge:   int(ttl.Seconds()),
+		MaxAge:   int(g.sesiones.TTL().Seconds()),
 	})
 }
 

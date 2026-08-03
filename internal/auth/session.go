@@ -42,6 +42,12 @@ func NewSessions(db *sql.DB, ttl time.Duration, opts ...OpcionSesion) *Sessions 
 	return s
 }
 
+// TTL devuelve la vigencia configurada de las sesiones. Es la única fuente de
+// verdad para cuánto dura una sesión: Guard.PonerCookie la usa para que la
+// cookie y la fila en la base caduquen siempre al mismo tiempo, en vez de
+// recibir el TTL por separado y arriesgarse a que diverjan.
+func (s *Sessions) TTL() time.Duration { return s.ttl }
+
 // hashToken es la única vía por la que un token se convierte en clave de la
 // base. En sessions se guarda SIEMPRE el hash, nunca el token: una filtración
 // de la base entrega valores inservibles en vez de sesiones activas.
