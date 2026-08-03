@@ -62,7 +62,15 @@ func Validar(name, email, password string) error {
 	if len(normalizado) > MaxEmail {
 		return ErrorValidacion{"email", "El email es demasiado largo"}
 	}
-	if _, err := mail.ParseAddress(normalizado); err != nil {
+	// mail.ParseAddress no basta: acepta formas como "Nombre <ana@x.com>",
+	// "<ana@x.com>" o "ana@x.com (comentario)", y las deja pasar sin avisar.
+	// Si guardáramos esas formas, NormalizarEmail("Nombre <ana@x.com>") no
+	// colisionaría con NormalizarEmail("ana@x.com") en el UNIQUE de la base,
+	// permitiendo altas duplicadas y rompiendo el login cruzado. Por eso
+	// exigimos que la dirección ya extraída (.Address) coincida con lo que
+	// el usuario mandó: eso descarta cualquier envoltorio.
+	addr, err := mail.ParseAddress(normalizado)
+	if err != nil || addr.Address != normalizado {
 		return ErrorValidacion{"email", "El email no es válido"}
 	}
 
