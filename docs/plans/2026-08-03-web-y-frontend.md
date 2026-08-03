@@ -4593,6 +4593,55 @@ tmp-zapping.db-shm
 tmp-zapping.db-wal
 ```
 
+- [ ] **Step 2b: Cerrar los hallazgos menores que la ejecución fue dejando**
+
+Salieron de las revisiones por tarea y se difirieron a propósito para no alargar
+sus bucles. Son cuatro, todos pequeños, y los cuatro tienen la misma forma: algo
+que el código afirma y no cumple.
+
+1. **`internal/web/stream_test.go`** — el comentario de `TestPlaylistEsElDelSnapshot`
+   dice que `TestPlaylistNoMutaElSnapshotCompartido` delataría un playlist
+   re-renderizado por request. No es cierto: un re-render determinista produce los
+   mismos bytes y no toca el array compartido, así que ninguno de los dos lo
+   detecta. Corregir el comentario para que diga lo que los tests sí cubren —
+   ninguno de los dos vigila el re-render, y eso exigiría contar asignaciones.
+   Un comentario que promete cobertura inexistente es peor que no tenerlo.
+
+2. **`internal/web/static/player.js`** — en el manejador de `FRAG_BUFFERED` hay un
+   `fallo.hidden = true` sin guarda, justo después de que `mostrarFallo` se hiciera
+   tolerante a que ese elemento falte. Dejarlo a medias es peor que cualquiera de
+   las dos posturas: usar `mostrarFallo`/una guarda equivalente.
+
+3. **`internal/web/pages.go`** — `render` no emite `Cache-Control`. `/player` lleva
+   el nombre del usuario y los 422 el email tipeado; una respuesta sin `Set-Cookie`
+   y sin directivas de caché es cacheable heurísticamente por un intermediario.
+   Agregar `w.Header().Set("Cache-Control", "no-store")` en `render`, con su
+   comentario. Es una línea y cierra el caso.
+
+4. **`cmd/server/main.go`** — las tres goroutines (`hub.Run`, `motor.Run`,
+   `limpiarSesiones`) no se esperan antes de que el `defer db.Close()` corra. El
+   riesgo real es benigno: las tres salen por `ctx.Done()` casi al instante y la
+   única que toca la base registra el error y sigue. Pero es lo único en ese
+   archivo que no está documentado como decisión. Agregar el comentario que lo
+   declare aceptado y por qué, en vez de dejarlo pareciendo un olvido.
+
+Tras cada cambio, correr los tests del paquete afectado. Ninguno de los cuatro
+debería requerir tests nuevos; si alguno los pide, pararse y reportarlo.
+
+- [ ] **Step 2c: Verificar el apagado ordenado en contenedor**
+
+La Task 8 no pudo comprobarlo: Windows no entrega una señal de consola a un
+proceso en segundo plano en este entorno. Se verifica en Linux:
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm -d --name zapping-apagado   -v "C:/Users/Matias/Desktop/PruebaTecnica:/src" -w /src   -e DB_PATH=/tmp/z.db -e "SEGMENTS_DIR=/src/hls test"   golang:1.26 go run ./cmd/server
+sleep 20 && docker stop -t 15 zapping-apagado && docker logs zapping-apagado
+```
+
+Expected: en el log, `señal recibida, apagando` y después `apagado limpio`, y el
+`docker stop` devolviendo bastante antes de sus 15 segundos. Si Docker no está
+disponible, anotarlo y dejarlo para el bloque 05.
+
 - [ ] **Step 3: Reconciliar `docs/04-web-y-frontend.md` con el código**
 
 Cinco correcciones, cada una donde corresponda:
