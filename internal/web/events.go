@@ -42,7 +42,11 @@ func (m *manejadorEventos) sse(w http.ResponseWriter, r *http.Request) {
 	// movería nunca.
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	vaciar.Flush() // que el cliente sepa que está conectado antes del primer evento
+	// Manda las cabeceras ya. Hoy el hub siempre deja un evento listo antes de
+	// que Suscribir vuelva, así que no cambia nada observable; existe para que
+	// el tiempo hasta el primer byte no dependa de cuánto tarde Suscribir, en
+	// vez de heredar en silencio una garantía que vive en otro paquete.
+	vaciar.Flush()
 
 	// Suscribir devuelve un canal ya con el estado vigente adentro, así que el
 	// panel se pinta al instante en vez de esperar a la próxima rotación.

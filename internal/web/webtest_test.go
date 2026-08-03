@@ -36,6 +36,11 @@ type banco struct {
 	// entierre la salida de `go test`; los tests que necesiten inspeccionar el
 	// log lo leen de acá.
 	Registro *bufferDeLog
+
+	// Cancelar apaga el hub sin esperar a que termine el test. Lo necesitan
+	// los tests que verifican qué pasa con un espectador todavía conectado
+	// cuando el proceso se apaga (el camino real de `docker stop`).
+	Cancelar context.CancelFunc
 }
 
 // hashBarato reemplaza a auth.HashPassword en los tests.
@@ -75,6 +80,7 @@ func entorno(t *testing.T) *banco {
 		Motor: motor, Pool: pool, Hub: hub,
 		Guard: guard, Sesiones: sesiones, Usuarios: usuarios,
 		Registro: registro,
+		Cancelar: cancelar,
 	}
 	b.Handler = NewRouter(Deps{
 		Motor: motor, Pool: pool, Hub: hub,

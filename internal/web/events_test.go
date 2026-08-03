@@ -12,6 +12,21 @@ import (
 	"zapping-live/internal/viewers"
 )
 
+// servidorDePrueba levanta el servidor y programa su cierre con t.Cleanup, NO
+// con defer.
+//
+// El orden importa: los defer del test corren ANTES que los t.Cleanup, así que
+// un `defer srv.Close()` cerraría el servidor mientras el cuerpo SSE sigue
+// abierto —su cierre lo registra abrirSSE, más tarde— y Close() se quedaría
+// cinco segundos esperando esa conexión. Con Cleanup el orden se invierte:
+// primero el cuerpo, después el servidor, y al final el hub.
+func servidorDePrueba(t *testing.T, b *banco) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(b.Handler)
+	t.Cleanup(func() { srv.Close() })
+	return srv
+}
+
 // abrirSSE conecta al endpoint y devuelve un lector de líneas.
 func abrirSSE(t *testing.T, srv *httptest.Server, galleta *http.Cookie) (*http.Response, *bufio.Reader) {
 	t.Helper()
@@ -61,14 +76,7 @@ func leerEvento(t *testing.T, br *bufio.Reader) viewers.Evento {
 
 func TestSSECabecerasYPrimerEvento(t *testing.T) {
 	b := entorno(t)
-	srv := httptest.NewServer(b.Handler)
-	// t.Cleanup y no defer: Cleanup corre en orden LIFO DESPUÉS de que la
-	// función del test termina, así que el Cleanup que cierra el cuerpo de la
-	// conexión SSE (registrado dentro de abrirSSE, más tarde) se ejecuta antes
-	// que este. Con "defer srv.Close()" el orden es al revés —los defers del
-	// test corren antes que cualquier Cleanup— y Close() se queda hasta 5 s
-	// esperando a que una conexión SSE todavía abierta se cierre sola.
-	t.Cleanup(func() { srv.Close() })
+	srv := servidorDePrueba(t, b)
 	_, galleta := usuarioConSesion(t, b)
 
 	resp, br := abrirSSE(t, srv, galleta)
@@ -93,14 +101,7 @@ func TestSSECabecerasYPrimerEvento(t *testing.T) {
 
 func TestSSERecibeLasRotaciones(t *testing.T) {
 	b := entorno(t)
-	srv := httptest.NewServer(b.Handler)
-	// t.Cleanup y no defer: Cleanup corre en orden LIFO DESPUÉS de que la
-	// función del test termina, así que el Cleanup que cierra el cuerpo de la
-	// conexión SSE (registrado dentro de abrirSSE, más tarde) se ejecuta antes
-	// que este. Con "defer srv.Close()" el orden es al revés —los defers del
-	// test corren antes que cualquier Cleanup— y Close() se queda hasta 5 s
-	// esperando a que una conexión SSE todavía abierta se cierre sola.
-	t.Cleanup(func() { srv.Close() })
+	srv := servidorDePrueba(t, b)
 	_, galleta := usuarioConSesion(t, b)
 
 	_, br := abrirSSE(t, srv, galleta)
@@ -133,14 +134,7 @@ func TestSSECuentaDosPestanas(t *testing.T) {
 	// El criterio de aceptación textual del bloque: abrir dos pestañas sube el
 	// contador a 2, cerrar una lo baja a 1.
 	b := entorno(t)
-	srv := httptest.NewServer(b.Handler)
-	// t.Cleanup y no defer: Cleanup corre en orden LIFO DESPUÉS de que la
-	// función del test termina, así que el Cleanup que cierra el cuerpo de la
-	// conexión SSE (registrado dentro de abrirSSE, más tarde) se ejecuta antes
-	// que este. Con "defer srv.Close()" el orden es al revés —los defers del
-	// test corren antes que cualquier Cleanup— y Close() se queda hasta 5 s
-	// esperando a que una conexión SSE todavía abierta se cierre sola.
-	t.Cleanup(func() { srv.Close() })
+	srv := servidorDePrueba(t, b)
 	_, galleta := usuarioConSesion(t, b)
 
 	_, br1 := abrirSSE(t, srv, galleta)
@@ -167,14 +161,7 @@ func TestSSEDesconexionDesRegistra(t *testing.T) {
 	// r.Context().Done() es lo que garantiza que cerrar la pestaña no deje una
 	// goroutine colgada esperando eventos para nadie.
 	b := entorno(t)
-	srv := httptest.NewServer(b.Handler)
-	// t.Cleanup y no defer: Cleanup corre en orden LIFO DESPUÉS de que la
-	// función del test termina, así que el Cleanup que cierra el cuerpo de la
-	// conexión SSE (registrado dentro de abrirSSE, más tarde) se ejecuta antes
-	// que este. Con "defer srv.Close()" el orden es al revés —los defers del
-	// test corren antes que cualquier Cleanup— y Close() se queda hasta 5 s
-	// esperando a que una conexión SSE todavía abierta se cierre sola.
-	t.Cleanup(func() { srv.Close() })
+	srv := servidorDePrueba(t, b)
 	_, galleta := usuarioConSesion(t, b)
 
 	resp, br := abrirSSE(t, srv, galleta)
@@ -197,14 +184,7 @@ func TestSSEDesconexionDesRegistra(t *testing.T) {
 
 func TestSSESinSesionEs401(t *testing.T) {
 	b := entorno(t)
-	srv := httptest.NewServer(b.Handler)
-	// t.Cleanup y no defer: Cleanup corre en orden LIFO DESPUÉS de que la
-	// función del test termina, así que el Cleanup que cierra el cuerpo de la
-	// conexión SSE (registrado dentro de abrirSSE, más tarde) se ejecuta antes
-	// que este. Con "defer srv.Close()" el orden es al revés —los defers del
-	// test corren antes que cualquier Cleanup— y Close() se queda hasta 5 s
-	// esperando a que una conexión SSE todavía abierta se cierre sola.
-	t.Cleanup(func() { srv.Close() })
+	srv := servidorDePrueba(t, b)
 
 	resp, err := srv.Client().Get(srv.URL + "/live/events")
 	if err != nil {
@@ -217,24 +197,81 @@ func TestSSESinSesionEs401(t *testing.T) {
 	}
 }
 
+func TestSSEElMensajeTerminaEnLineaEnBlanco(t *testing.T) {
+	// EventSource sólo DESPACHA el mensaje al ver la línea en blanco. Con un
+	// solo \n el navegador acumula datos y no entrega nada: el panel se
+	// quedaría vacío para siempre con la suite entera en verde y sin una línea
+	// de log. Es la diferencia entre "los tests pasan" y "funciona en el
+	// navegador", y no la cubre ninguna otra aserción: leerEvento lee por
+	// líneas y un solo \n también termina la línea del data:.
+	b := entorno(t)
+	srv := servidorDePrueba(t, b)
+	_, galleta := usuarioConSesion(t, b)
+
+	_, br := abrirSSE(t, srv, galleta)
+
+	datos, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("leyendo el evento: %v", err)
+	}
+	if !strings.HasPrefix(datos, "data: ") {
+		t.Fatalf("primera línea = %q, quiero un data:", datos)
+	}
+	cierre, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("leyendo el cierre del mensaje: %v", err)
+	}
+	if cierre != "\n" {
+		t.Errorf("tras el data: llegó %q, quiero una línea en blanco", cierre)
+	}
+}
+
+func TestSSEElApagadoDelHubCierraLaConexion(t *testing.T) {
+	// El camino real de `docker stop`: se cancela el contexto raíz, el hub
+	// cierra los canales de sus clientes y los handlers tienen que volver
+	// solos. De eso depende que http.Server.Shutdown termine rápido en vez de
+	// agotar su plazo, y el servidor no lleva WriteTimeout que lo rescate.
+	//
+	// Sin la rama !abierto, un canal cerrado se leería como un evento normal
+	// una y otra vez: el handler entraría en un bucle cerrado escribiendo
+	// eventos vacíos a toda velocidad.
+	b := entorno(t)
+	srv := servidorDePrueba(t, b)
+	_, galleta := usuarioConSesion(t, b)
+
+	_, br := abrirSSE(t, srv, galleta)
+	leerEvento(t, br) // el espectador ya está suscrito
+
+	b.Cancelar() // apaga el hub con el espectador todavía conectado
+
+	for {
+		linea, err := br.ReadString('\n')
+		if err != nil {
+			return // EOF: el handler cerró ordenadamente, que es lo que se busca
+		}
+		if strings.HasPrefix(linea, "data: ") {
+			t.Fatalf("el hub apagado sigue emitiendo eventos: %q", linea)
+		}
+	}
+}
+
 func TestSSENoFiltraDatosDelUsuario(t *testing.T) {
 	// El evento se difunde a TODOS los espectadores. Si alguna vez alguien
 	// agregara el nombre o el email al Evento, todos verían los de todos.
 	b := entorno(t)
-	srv := httptest.NewServer(b.Handler)
-	// t.Cleanup y no defer: Cleanup corre en orden LIFO DESPUÉS de que la
-	// función del test termina, así que el Cleanup que cierra el cuerpo de la
-	// conexión SSE (registrado dentro de abrirSSE, más tarde) se ejecuta antes
-	// que este. Con "defer srv.Close()" el orden es al revés —los defers del
-	// test corren antes que cualquier Cleanup— y Close() se queda hasta 5 s
-	// esperando a que una conexión SSE todavía abierta se cierre sola.
-	t.Cleanup(func() { srv.Close() })
+	srv := servidorDePrueba(t, b)
 	u, galleta := usuarioConSesion(t, b)
 
 	_, br := abrirSSE(t, srv, galleta)
 	linea, err := br.ReadString('\n')
 	if err != nil {
 		t.Fatalf("leyendo del SSE: %v", err)
+	}
+	// Sin esto el test pasaría contra una respuesta que no trae ningún evento
+	// —un 404, por ejemplo—: no encontrar el secreto en un cuerpo vacío no
+	// demuestra nada.
+	if !strings.HasPrefix(linea, "data: ") {
+		t.Fatalf("la primera línea no es un evento: %q", linea)
 	}
 	for _, secreto := range []string{u.Email, u.Name} {
 		if strings.Contains(linea, secreto) {
