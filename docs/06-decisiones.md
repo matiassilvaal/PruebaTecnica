@@ -468,6 +468,42 @@ Código de salida 0. El servicio cierra en menos de un segundo con 15 disponible
 `docker stop` señaliza sólo al proceso 1 y `go run` no relaya la señal al binario hijo. Es
 justo el tipo de error que se ve sano en desarrollo y pierde datos en producción.
 
+## Memoria medida, no argumentada
+
+El manejo de RAM es uno de los cuatro criterios evaluados, así que conviene un número real y
+no sólo el razonamiento. Medido sobre el contenedor en marcha, con **dos espectadores
+reproduciendo de verdad** desde un navegador:
+
+| Métrica | Valor |
+| --- | --- |
+| Heap del proceso (`anon` del cgroup) | **5,2 MiB** |
+| Total del contenedor (`docker stats`) | **5,9 MiB** |
+| `VmRSS` del proceso | 15,3 MiB |
+| Segmento promedio que está sirviendo | 7,5 MB |
+| Segmento más grande | 12,9 MB |
+
+**El servidor usa menos memoria que uno solo de los segmentos que entrega.** El más grande
+pesa 12,9 MB y el contenedor entero se mueve en 5,9 MiB. Si los `.ts` se cargaran en memoria
+para servirlos, cada petición produciría un pico de entre 7 y 13 MB por espectador; no
+aparece ninguno. Es la comprobación empírica de que `http.ServeContent` copia por bloques
+desde el `*os.File` en vez de leer el archivo entero.
+
+Los 15,3 MiB de `VmRSS` frente a 5,2 de heap son el binario de 12,6 MB mapeado en memoria:
+páginas de archivo, compartidas y descartables por el kernel, no presión de heap. Que el
+binario sea grande es consecuencia de embeber hls.js y el resto de los assets, y se paga en
+disco, no en RAM.
+
+Cinco muestras a lo largo de ~40 segundos —varias rotaciones de ventana, con sus snapshots
+nuevos y sus difusiones por SSE— dieron 4,90 · 5,03 · 5,16 · 5,16 · 5,16 MiB. Sube al
+principio y se aplana: no hay crecimiento sostenido, que es lo que delataría una fuga en el
+hub o en los handlers.
+
+```bash
+docker stats <contenedor> --no-stream
+docker exec <contenedor> sh -c 'grep "^anon " /sys/fs/cgroup/memory.stat'
+docker exec <contenedor> sh -c 'grep VmRSS /proc/1/status'
+```
+
 ## Cómo se encontraron los defectos: mutar el código a propósito
 
 Vale la pena dejarlo escrito, porque es lo que efectivamente encontró los problemas y no una
