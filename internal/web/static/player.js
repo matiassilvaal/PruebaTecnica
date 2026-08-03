@@ -111,83 +111,90 @@
   // un EventSource que el navegador rechaza— abortaría el resto del script sin
   // este aislamiento, dejando también el video sin sus manejadores.
   try {
-  var elEspectadores = document.getElementById('espectadores');
-  var elSecuencia = document.getElementById('secuencia');
-  var elVentana = document.getElementById('ventana');
-  var elCuenta = document.getElementById('cuenta-regresiva');
-  var elProgreso = document.getElementById('progreso');
-  var elDisc = document.getElementById('discontinuidad');
+    var elEspectadores = document.getElementById('espectadores');
+    var elSecuencia = document.getElementById('secuencia');
+    var elVentana = document.getElementById('ventana');
+    var elCuenta = document.getElementById('cuenta-regresiva');
+    var elProgreso = document.getElementById('progreso');
+    var elDisc = document.getElementById('discontinuidad');
 
-  // Referencia de la cuenta regresiva. El servidor manda nextRotationMs una
-  // vez por rotación; entre evento y evento interpolamos con el reloj local.
-  // Pedirle al servidor la fracción que falta sería una petición por frame.
-  var vencimiento = 0;
-  var duracionTramo = 1;
-  var ultimaSecuencia = null;
+    // Referencia de la cuenta regresiva. El servidor manda nextRotationMs en
+    // cada evento, ya relativo al instante en que lo mandó; entre evento y
+    // evento interpolamos con el reloj local. Pedirle al servidor la fracción
+    // que falta sería una petición por frame.
+    var vencimiento = 0;
+    var duracionTramo = 1;
+    var ultimaSecuencia = null;
 
-  var fuente = new EventSource(urlEventos);
+    var fuente = new EventSource(urlEventos);
 
-  fuente.onmessage = function (mensaje) {
-    var e;
-    try {
-      e = JSON.parse(mensaje.data);
-    } catch (_) {
-      return; // un evento ilegible no debe romper el panel
+    fuente.onmessage = function (mensaje) {
+      var e;
+      try {
+        e = JSON.parse(mensaje.data);
+      } catch (_) {
+        return; // un evento ilegible no debe romper el panel
+      }
+
+      elEspectadores.textContent = e.viewers;
+      elSecuencia.textContent = e.sequence;
+      elDisc.hidden = !e.discontinuity;
+
+      if (e.sequence !== ultimaSecuencia) {
+        pintarVentana(e.window || []);
+        ultimaSecuencia = e.sequence;
+      }
+
+      // Sólo se toma referencia con un plazo REAL. El primer evento que manda
+      // el hub es el estado previo a la primera rotación y trae 0: fijar el
+      // vencimiento con él dejaría "0.0 s" y la barra llena, como si la
+      // rotación estuviera vencida, que es justamente lo que la guarda de
+      // animar() quiere evitar.
+      var falta = Math.max(0, e.nextRotationMs || 0);
+      if (falta > 0) {
+        vencimiento = performance.now() + falta;
+        duracionTramo = falta;
+      }
+    };
+
+    fuente.onerror = function () {
+      // EventSource reconecta solo; sólo lo reflejamos en el panel. Un 401 tras
+      // vencer la sesión termina en readyState CLOSED, y ahí sí hay que volver
+      // a entrar.
+      if (fuente.readyState === EventSource.CLOSED) {
+        window.location.href = '/login';
+      }
+    };
+
+    function pintarVentana(nombres) {
+      elVentana.replaceChildren();
+      nombres.forEach(function (nombre, i) {
+        var li = document.createElement('li');
+        // "segment14.ts" → "14": el panel es angosto y el prefijo es ruido.
+        li.textContent = nombre.replace(/^segment/, '').replace(/\.ts$/, '');
+        li.title = nombre;
+        if (i === nombres.length - 1) li.classList.add('entrando');
+        elVentana.appendChild(li);
+      });
+      // Quitar la clase en el siguiente frame dispara la transición del CSS.
+      requestAnimationFrame(function () {
+        var ultimo = elVentana.lastElementChild;
+        if (ultimo) ultimo.classList.remove('entrando');
+      });
     }
 
-    elEspectadores.textContent = e.viewers;
-    elSecuencia.textContent = e.sequence;
-    elDisc.hidden = !e.discontinuity;
-
-    if (e.sequence !== ultimaSecuencia) {
-      pintarVentana(e.window || []);
-      ultimaSecuencia = e.sequence;
-    }
-
-    var falta = Math.max(0, e.nextRotationMs || 0);
-    vencimiento = performance.now() + falta;
-    duracionTramo = Math.max(falta, 1);
-  };
-
-  fuente.onerror = function () {
-    // EventSource reconecta solo; sólo lo reflejamos en el panel. Un 401 tras
-    // vencer la sesión termina en readyState CLOSED, y ahí sí hay que volver
-    // a entrar.
-    if (fuente.readyState === EventSource.CLOSED) {
-      window.location.href = '/login';
-    }
-  };
-
-  function pintarVentana(nombres) {
-    elVentana.replaceChildren();
-    nombres.forEach(function (nombre, i) {
-      var li = document.createElement('li');
-      // "segment14.ts" → "14": el panel es angosto y el prefijo es ruido.
-      li.textContent = nombre.replace(/^segment/, '').replace(/\.ts$/, '');
-      li.title = nombre;
-      if (i === nombres.length - 1) li.classList.add('entrando');
-      elVentana.appendChild(li);
-    });
-    // Quitar la clase en el siguiente frame dispara la transición del CSS.
-    requestAnimationFrame(function () {
-      var ultimo = elVentana.lastElementChild;
-      if (ultimo) ultimo.classList.remove('entrando');
-    });
-  }
-
-  function animar(ahora) {
-    // Hasta que llegue el primer evento no hay referencia que interpolar:
-    // pintar antes mostraría "0.0 s" y la barra llena durante un instante,
-    // como si la rotación estuviera vencida.
-    if (vencimiento > 0) {
-      var restante = Math.max(0, vencimiento - ahora);
-      elCuenta.textContent = (restante / 1000).toFixed(1) + ' s';
-      elProgreso.style.width = (100 - (restante / duracionTramo) * 100).toFixed(1) + '%';
+    function animar(ahora) {
+      // Hasta que llegue un evento con plazo no hay referencia que interpolar:
+      // pintar antes mostraría "0.0 s" y la barra llena, como si la rotación
+      // estuviera vencida.
+      if (vencimiento > 0) {
+        var restante = Math.max(0, vencimiento - ahora);
+        elCuenta.textContent = (restante / 1000).toFixed(1) + ' s';
+        elProgreso.style.width = (100 - (restante / duracionTramo) * 100).toFixed(1) + '%';
+      }
+      requestAnimationFrame(animar);
     }
     requestAnimationFrame(animar);
-  }
-  requestAnimationFrame(animar);
-
   } catch (err) {
     // El panel es la feature opcional; el video es el requisito. Si el panel
     // no se pudo montar, se pierde el panel y nada más.
