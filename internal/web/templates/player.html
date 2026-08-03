@@ -9,11 +9,46 @@
   </div>
 </header>
 
-<!-- La URL del playlist vive en el HTML, no en JavaScript: el servidor es
-     quien conoce su arbol de rutas. La Task 7 la lee desde aca. -->
-<main class="escenario" data-playlist="/live/stream.m3u8">
-  <div class="marco">
-    <video id="video" playsinline controls autoplay muted></video>
-  </div>
+<!-- Las dos URL del stream viven acá y no en player.js: el servidor es quien
+     conoce su propio árbol de rutas, y así hay una sola fuente de verdad en
+     vez de una constante en Go y otra en JavaScript que pueden divergir. -->
+<main class="escenario" data-playlist="/live/stream.m3u8" data-eventos="/live/events">
+  <section class="marco">
+    <video id="video" playsinline controls autoplay muted poster=""></video>
+    <!-- Overlay SIN backdrop-filter: encima del video sólo va un degradado.
+         Ver docs/06-decisiones.md. -->
+    <button id="volver-al-vivo" class="superpuesto" hidden>▶ Volver al vivo</button>
+    <p id="fallo" class="superpuesto fallo" hidden role="alert"></p>
+  </section>
+
+  <!-- Los paneles de vidrio van AL LADO del video, nunca encima. -->
+  <aside class="panel vidrio">
+    <p class="vivo"><span class="punto" aria-hidden="true"></span> EN VIVO</p>
+
+    <p class="metrica">
+      <span class="ojo" aria-hidden="true">👁</span>
+      <span id="espectadores">—</span>
+      <span class="unidad">espectadores</span>
+    </p>
+
+    <dl class="datos">
+      <dt>media-sequence</dt>
+      <dd id="secuencia">—</dd>
+    </dl>
+
+    <p class="etiqueta">ventana</p>
+    <ol id="ventana" class="ventana" aria-live="polite"></ol>
+
+    <p class="etiqueta">próxima rotación</p>
+    <p class="cuenta"><span id="cuenta-regresiva">—</span></p>
+    <div class="barra-progreso"><div id="progreso"></div></div>
+
+    <p id="discontinuidad" class="disc" hidden>vuelta del ciclo · EXT-X-DISCONTINUITY</p>
+  </aside>
 </main>
+{{end}}
+
+{{define "scripts"}}
+<script src="/static/vendor/hls.min.js"></script>
+<script src="/static/player.js" defer></script>
 {{end}}
