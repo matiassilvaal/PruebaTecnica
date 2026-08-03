@@ -11,21 +11,34 @@ import (
 // rotación y descarta el anterior, en vez de mutar un estado compartido. Eso
 // permite que los lectores accedan sin locks.
 type Snapshot struct {
-	Seq      int64     // EXT-X-MEDIA-SEQUENCE
-	DiscSeq  int64     // EXT-X-DISCONTINUITY-SEQUENCE
-	HasDisc  bool      // hay una discontinuidad dentro de esta ventana
-	Window   []Segment // exactamente windowSize elementos
-	Playlist []byte    // el .m3u8 ya renderizado
-	NextAt   time.Time // instante de la próxima rotación
+	Seq     int64 // EXT-X-MEDIA-SEQUENCE
+	DiscSeq int64 // EXT-X-DISCONTINUITY-SEQUENCE
+	HasDisc bool  // hay al menos una discontinuidad dentro de esta ventana
+
+	// Window es de SÓLO LECTURA. El Snapshot es inmutable una vez publicado:
+	// mutar este slice (o los Segment que contiene) corrompería el estado que
+	// ven todos los demás lectores concurrentes, que comparten el mismo
+	// *Snapshot sin copiarlo.
+	Window []Segment // exactamente windowSize elementos
+
+	// Playlist es de SÓLO LECTURA, por la misma razón que Window: es el .m3u8
+	// ya renderizado y compartido por referencia entre lectores. No escribir
+	// sobre estos bytes; el mismo contrato idiomático que bytes.Buffer.Bytes().
+	Playlist []byte
+
+	NextAt time.Time // instante de la próxima rotación
 }
 
 // buildSnapshot arma la ventana que arranca en `seq` y renderiza su playlist.
 //
 // La discontinuidad se marca cuando el ciclo vuelve al primer segmento del
 // pool, porque ahí los timestamps del video saltan hacia atrás y el
-// decodificador debe reinicializarse. Sólo se emite la etiqueta si el salto
-// cae DENTRO de la ventana (posición 1 en adelante): si cayera en la posición
-// 0, la etiqueta ya salió del playlist y quedó contabilizada en DiscSeq.
+// decodificador debe reinicializarse. HasDisc queda en true si al menos un
+// salto cae DENTRO de la ventana (posición 1 en adelante): si cayera en la
+// posición 0, la etiqueta ya salió del playlist y quedó contabilizada en
+// DiscSeq. El detalle de en qué posiciones exactas emitir la etiqueta lo
+// recalcula renderPlaylist, porque con windowSize >= 2*Pool.Len() puede haber
+// más de un salto en la misma ventana.
 func buildSnapshot(p *Pool, seq int64, windowSize int, nextAt time.Time) *Snapshot {
 	n := int64(p.Len())
 
@@ -36,17 +49,15 @@ func buildSnapshot(p *Pool, seq int64, windowSize int, nextAt time.Time) *Snapsh
 		NextAt:  nextAt,
 	}
 
-	discAt := -1 // posición de la ventana que lleva la etiqueta, o -1
 	for k := 0; k < windowSize; k++ {
 		pos := seq + int64(k)
 		s.Window = append(s.Window, p.At(int(pos%n)))
 		if k > 0 && pos%n == 0 {
-			discAt = k
 			s.HasDisc = true
 		}
 	}
 
-	s.Playlist = renderPlaylist(p, s, discAt)
+	s.Playlist = renderPlaylist(p, s)
 	return s
 }
 
@@ -56,18 +67,23 @@ func buildSnapshot(p *Pool, seq int64, windowSize int, nextAt time.Time) *Snapsh
 // sería repetir el mismo trabajo N veces. Renderizándolo acá, cada petición
 // HTTP se reduce a escribir bytes ya listos: sin formateo ni asignaciones.
 //
-// discAt es la posición de la ventana que debe llevar la etiqueta de
-// discontinuidad, o -1 si no hay ninguna.
-func renderPlaylist(p *Pool, s *Snapshot, discAt int) []byte {
+// La etiqueta EXT-X-DISCONTINUITY se emite antes de cada posición k>0 de la
+// ventana en la que el ciclo vuelve al primer segmento del pool. Se evalúa la
+// condición en cada iteración (en vez de guardar una única posición) porque
+// una ventana puede contener varias vueltas completas si windowSize es lo
+// bastante grande respecto al tamaño del pool.
+func renderPlaylist(p *Pool, s *Snapshot) []byte {
 	var b bytes.Buffer
 	b.Grow(512)
+
+	n := int64(p.Len())
 
 	fmt.Fprintf(&b, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:%d\n", p.Target())
 	fmt.Fprintf(&b, "#EXT-X-MEDIA-SEQUENCE:%d\n", s.Seq)
 	fmt.Fprintf(&b, "#EXT-X-DISCONTINUITY-SEQUENCE:%d\n", s.DiscSeq)
 
 	for k, seg := range s.Window {
-		if k == discAt {
+		if k > 0 && (s.Seq+int64(k))%n == 0 {
 			b.WriteString("#EXT-X-DISCONTINUITY\n")
 		}
 		fmt.Fprintf(&b, "#EXTINF:%.6f,\nsegments/%s\n", seg.Duration.Seconds(), seg.Name)

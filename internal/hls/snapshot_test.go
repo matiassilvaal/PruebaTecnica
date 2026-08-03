@@ -205,3 +205,54 @@ func TestRenderPlaylistDuracionRealNoTarget(t *testing.T) {
 		t.Errorf("el segmento corto salió con duración 10s:\n%s", got)
 	}
 }
+
+// poolCorto construye un pool de 2 segmentos de 1s cada uno, directamente con
+// newPool, para poder pedir una ventana varias veces más grande que el pool
+// (windowSize >= 2*Pool.Len()) y así forzar más de una vuelta dentro de la
+// misma ventana.
+func poolCorto() *Pool {
+	return newPool([]Segment{
+		{Name: "a.ts", Duration: time.Second},
+		{Name: "b.ts", Duration: time.Second},
+	}, "testdata")
+}
+
+func TestRenderPlaylistMultiplesDiscontinuidades(t *testing.T) {
+	p := poolCorto()
+	// n=2, windowSize=5: la ventana da dos vueltas y media al pool.
+	// pos%n==0 en k=0 (no cuenta, es la posición 0), k=2 y k=4.
+	want := "#EXTM3U\n" +
+		"#EXT-X-VERSION:3\n" +
+		"#EXT-X-TARGETDURATION:1\n" +
+		"#EXT-X-MEDIA-SEQUENCE:0\n" +
+		"#EXT-X-DISCONTINUITY-SEQUENCE:0\n" +
+		"#EXTINF:1.000000,\n" +
+		"segments/a.ts\n" +
+		"#EXTINF:1.000000,\n" +
+		"segments/b.ts\n" +
+		"#EXT-X-DISCONTINUITY\n" +
+		"#EXTINF:1.000000,\n" +
+		"segments/a.ts\n" +
+		"#EXTINF:1.000000,\n" +
+		"segments/b.ts\n" +
+		"#EXT-X-DISCONTINUITY\n" +
+		"#EXTINF:1.000000,\n" +
+		"segments/a.ts\n"
+
+	s := buildSnapshot(p, 0, 5, time.Time{})
+	got := string(s.Playlist)
+	if got != want {
+		t.Errorf("playlist:\n%s\nquiero:\n%s", got, want)
+	}
+	if n := strings.Count(got, "#EXT-X-DISCONTINUITY\n"); n != 2 {
+		t.Errorf("etiquetas de discontinuidad = %d, quiero 2", n)
+	}
+}
+
+func TestBuildSnapshotHasDiscMultiplesSaltos(t *testing.T) {
+	p := poolCorto()
+	s := buildSnapshot(p, 0, 5, time.Time{})
+	if !s.HasDisc {
+		t.Errorf("HasDisc = false con dos saltos en la ventana, quiero true")
+	}
+}
