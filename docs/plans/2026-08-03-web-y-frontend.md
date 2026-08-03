@@ -1297,6 +1297,54 @@ func TestRegistrarDejaLineaDeLog(t *testing.T) {
 	}
 }
 
+func TestRegistrarUsa200CuandoElHandlerNoLoFija(t *testing.T) {
+	// Un handler que sólo llama a Write —como /healthz en su camino sano, que
+	// es la petición más frecuente del sistema— nunca pasa por WriteHeader.
+	// Sin el valor inicial de respuestaObservada, todas esas peticiones
+	// quedarían registradas con un 0.
+	registro := &bufferDeLog{}
+	soloEscribe := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("ok\n"))
+	})
+	h := registrar(log.New(registro, "", 0), soloEscribe)
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/solo-write", nil))
+
+	if !strings.Contains(registro.String(), "200") {
+		t.Errorf("el log no registró 200 para un handler que sólo escribe: %q", registro.String())
+	}
+}
+
+func TestElPanicoIgualDejaLineaDeLog(t *testing.T) {
+	// El orden de los middlewares es load-bearing: `registrar` tiene que
+	// envolver a `recuperar`, no al revés. Invertido, el pánico atravesaría a
+	// registrar antes de llegar a su Printf, y la petición que tumbó al handler
+	// sería justamente la única sin línea de log — la que más falta hace.
+	//
+	// Se prueba sobre el router REAL, no sobre una composición armada acá: una
+	// composición local seguiría pasando aunque NewRouter invirtiera el orden.
+	// El pánico entra por la función de salud, que es la única vía que Deps
+	// ofrece para meterlo dentro de una ruta de verdad.
+	registro := &bufferDeLog{}
+	h := NewRouter(Deps{
+		Salud: func(context.Context) error { panic("explotó dentro de una ruta real") },
+		Log:   log.New(registro, "", 0),
+	})
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/healthz", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("código = %d, quiero 500", w.Code)
+	}
+	linea := registro.String()
+	if !strings.Contains(linea, "/healthz") {
+		t.Errorf("no quedó línea de log para la petición que entró en pánico: %q", linea)
+	}
+	if !strings.Contains(linea, "500") {
+		t.Errorf("la línea de log no registra el 500: %q", linea)
+	}
+}
+
 func TestRespuestaObservadaConservaElFlusher(t *testing.T) {
 	// El SSE hace una aserción a http.Flusher sobre el ResponseWriter. Si el
 	// envoltorio del logging no reexpusiera Flush, esa aserción fallaría y el
@@ -1541,7 +1589,13 @@ func recuperar(l *log.Logger, next http.Handler) http.Handler {
 - [ ] **Step 6: Correr los tests y verificar que pasan**
 
 Run: `go test ./internal/web/ -v -count=1`
-Expected: PASS, 8 tests.
+Expected: PASS, 10 tests.
+
+Dos de ellos existen porque su ausencia dejaba pasar mutaciones silenciosas:
+borrar `codigo: http.StatusOK` de `respuestaObservada` (todas las peticiones que
+sólo escriben quedarían registradas con un 0) e invertir el orden a
+`recuperar(registrar(mux))` (la petición que tumba al handler sería la única sin
+línea de log). Ninguna de las dos rompía nada antes.
 
 - [ ] **Step 7: Commitear**
 
