@@ -117,11 +117,78 @@ Copia por bloques desde un `*os.File` en vez de cargar el archivo en memoria, y 
 *range requests* sin código adicional. Un segmento de 13 MB consume del orden de KB de RAM
 del servidor.
 
-### Backpressure en el hub SSE
+### El hub SSE tiene una goroutine dueña, no un mutex
 
-Cada cliente tiene un canal con buffer acotado; si se llena, el evento se descarta. Sin eso,
-un solo cliente lento bloquearía el broadcast para todos y las goroutines se acumularían.
-Es la fuga de memoria clásica de este patrón.
+**Alternativa evaluada:** un `map[*cliente]struct{}` protegido con `sync.RWMutex`.
+
+**Decisión:** una sola goroutine (`Hub.Run`) es dueña del conjunto de clientes; todo lo demás
+—alta, baja, difusión— entra por canales.
+
+**Por qué:** el mapa deja de necesitar sincronización porque nadie más lo toca, y las tres
+operaciones se serializan solas sin que haya que razonar sobre el orden de los locks. Es el
+patrón que Go recomienda para este caso y hace que el paquete se verifique con `-race` sin
+ambigüedad. El costo es que las operaciones pasan por canales, irrelevante a este ritmo: un
+evento cada ~10 s.
+
+Un corolario que salió de la implementación: `Suscribir` es **síncrona respecto del alta**.
+Cuando vuelve, el cliente ya está en el conjunto, el contador ya lo incluye y el estado
+vigente ya está en su canal. Cuesta un viaje de ida y vuelta por espectador —no por
+rotación— y elimina toda una clase de carreras entre quien se suscribe y la goroutine dueña:
+sin esa espera, un suscriptor podía leer un contador viejo o recibir su evento de alta
+detrás del de alguien que se suscribió después.
+
+### Dos puntos de backpressure, no uno
+
+El documento de diseño tenía uno. En la implementación resultaron ser dos, y por razones
+distintas:
+
+1. **El envío a cada cliente.** Un espectador que dejó de leer —red lenta, pestaña
+   congelada— bloquearía el broadcast para todos los demás y acumularía eventos sin techo.
+   Es la fuga de memoria clásica de este patrón.
+2. **`Hub.Publicar`.** Lo llama el hook de rotación del motor, que corre síncronamente en la
+   goroutine que hace avanzar el stream. Si se bloqueara, el stream se detendría **para todos
+   los espectadores**, no sólo el panel.
+
+Los dos descartan con `select`/`default`. Descartar es correcto porque cada evento trae el
+**estado completo, no un delta**: el siguiente pone al día igual. Es la decisión que responde
+al criterio de RAM del enunciado en la parte asíncrona del sistema, igual que
+`http.ServeContent` lo hace en la parte de disco.
+
+### El binario es autosuficiente: templates, CSS, JS y hls.js embebidos
+
+`go:embed` mete los assets dentro del binario. El contenedor no depende de cuál sea el
+directorio de trabajo, el Dockerfile **no necesita `COPY web/`**, y un `go run ./cmd/server`
+desde cualquier carpeta funciona igual. Como `embed` no puede subir de directorio, los assets
+viven bajo `internal/web/` en vez de en un `web/` de la raíz: la restricción de la
+herramienta y la decisión de empaquetado apuntan al mismo lugar.
+
+### El servidor HTTP no lleva `WriteTimeout`
+
+Cortaría toda conexión SSE a los pocos segundos, que es justo lo que este servicio necesita
+mantener abierta. Contra clientes lentos van `ReadHeaderTimeout` (slowloris) y el
+backpressure del hub, que atacan el problema real sin romper las respuestas largas.
+
+La ausencia está **fijada por un test** (`TestElServidorNoLlevaWriteTimeout`), y no por
+prolijidad: agregarlo "por prudencia" es exactamente el cambio que alguien hace un día sin
+que nada se queje, y el síntoma —conexiones SSE que se cortan solas— aparecería lejos de la
+causa.
+
+### Errores de formulario con 422, no con 200
+
+Un 200 diría que la petición se procesó correctamente, y no es cierto. 422 (Unprocessable
+Content) es exacto y los navegadores renderizan el cuerpo igual, así que la corrección no
+cuesta nada. Las credenciales incorrectas van con 401; sólo un fallo de la base da 500.
+
+### El `.m3u8` y los `.ts` se cachean al revés a propósito
+
+El playlist con `no-cache, no-store`: uno cacheado le entrega al player una ventana vieja,
+que lo lleva a pedir segmentos ya expirados y a cortar la reproducción. Los segmentos con
+`max-age=31536000, immutable`: su contenido no cambia nunca, así que revisitar la ventana no
+vuelve a costarle disco al servidor. Direcciones opuestas, cada una por una razón concreta.
+
+Los estáticos (`/static/*`) quedan en el medio, con `max-age=3600` y sin `immutable`: sus
+nombres no llevan huella del contenido, así que con `immutable` un cambio de CSS sería
+invisible para quien ya visitó la página.
 
 ### Toda la ruta del stream está protegida, no sólo `/player`
 
@@ -202,6 +269,29 @@ backend compartido (Redis o similar), fuera del alcance de esta prueba.
 
 Se asume un proxy inverso por delante en producción. `SECURE_COOKIES` ya está previsto.
 
+### El login cierra las sesiones de los otros dispositivos
+
+`DestruirDeUsuario` antes de `Crear` previene session fixation, pero como efecto colateral
+entrar desde el celular desconecta el navegador. Se aceptó a propósito: en una prueba técnica
+pesa más la propiedad de seguridad demostrable que la comodidad multi-dispositivo. Un
+producto real rotaría sólo el token de la sesión en curso y dejaría `DestruirDeUsuario` para
+el cambio de contraseña.
+
+### Sin token CSRF en los formularios
+
+La cookie de sesión es `SameSite=Lax`, lo que impide que un sitio externo envíe un POST
+autenticado, y las tres acciones con efecto (registro, login, logout) son POST. Para un sitio
+de tres páginas es suficiente; un producto con más superficie agregaría el token.
+
+### El re-render del playlist por request no está cubierto por ningún test
+
+Que el `.m3u8` se renderice una sola vez por rotación es una decisión de RAM, pero no hay
+test que la fije: un re-render determinista produce exactamente los mismos bytes y no toca el
+array compartido, así que ni `TestPlaylistEsElDelSnapshot` ni
+`TestPlaylistNoMutaElSnapshotCompartido` lo verían. Detectarlo exigiría contar asignaciones
+(`testing.AllocsPerRun` sobre el handler). Está anotado en el comentario del test para que
+nadie lea de ahí una garantía que no existe.
+
 ---
 
 ## Verificación del bloque 02 (motor HLS)
@@ -228,9 +318,132 @@ Resultado sobre el commit final: **sin advertencias de carrera**. La afirmación
 las lecturas son wait-free y no hay estado mutable compartido está verificada
 empíricamente, no sólo argumentada por diseño.
 
-## Restricciones que heredan los bloques siguientes
+## Verificación del bloque 04 (web y frontend), y del proyecto entero
 
-Salieron de las revisiones del bloque 02 y hay que respetarlas al implementar el resto:
+Ejecutado al cerrar el bloque, sobre `feat/web-frontend`. Los números son los reales.
+
+```bash
+$ go test ./... -count=1
+ok  zapping-live/cmd/server 2.1s   ok  zapping-live/internal/auth 3.4s
+ok  zapping-live/internal/config 1.0s   ok  zapping-live/internal/cuenta 2.5s
+ok  zapping-live/internal/hls 2.0s   ok  zapping-live/internal/storage 1.0s
+ok  zapping-live/internal/viewers 1.3s   ok  zapping-live/internal/web 2.9s
+```
+
+**150 tests** en total, 0 fallos, la suite completa en 5,0 s de reloj. Repartidos:
+`web` 50, `hls` 35, `auth` 25, `cuenta` 15, `viewers` 9, `storage` 9, `cmd/server` 4,
+`config` 3.
+
+```bash
+CGO_ENABLED=0 go build ./...   # compila
+go vet ./...                   # sin hallazgos
+gofmt -l .                     # sin salida
+```
+
+Cobertura de los paquetes nuevos: `viewers` 97,6 %, `config` 93,9 %, `web` 77,1 %,
+`cmd/server` 25,0 % — este último es cableado, y el `run()` que lo arma exigiría levantar el
+proceso para probarlo; de ese archivo sí están cubiertos `limpiarSesiones` y la ausencia de
+`WriteTimeout`.
+
+**La regla de dependencias se sostiene**, y se comprueba en vez de afirmarse:
+
+```bash
+go list -deps ./internal/hls | grep -x net/http        # vacío: hls no conoce HTTP
+go list -deps ./internal/viewers | grep zapping-live  # sólo él mismo, ningún otro del proyecto
+```
+
+`internal/viewers` no importa **ningún** otro paquete del proyecto: no sabe que existe `hls`
+ni que existe HTTP. Es lo que permite probar el hub sin levantar un servidor ni arrancar el
+motor, y lo que obliga a que el puente entre los dos (`web.HookDeRotacion`) viva en el único
+paquete que ya conoce a ambos.
+
+**Sin dependencias nuevas.** El bloque 04 no agregó ninguna: siguen siendo dos.
+
+```bash
+git diff feat/auth-db..HEAD -- go.mod go.sum   # sin salida
+```
+
+*(La comprobación contra `master` que pedía el plan no aplica tal cual: en `master` todavía
+no existe `go.mod`, porque los bloques 02 y 03 viven en ramas propias sin mergear. El
+contraste válido es contra la rama de la que sale ésta, y da vacío.)*
+
+**Detector de carreras**, en contenedor Linux porque `-race` necesita un compilador C que
+Windows no trae con Go:
+
+```bash
+$ docker run --rm -v "$PWD:/src" -w /src golang:1.26 go test -race -count=1 ./...
+ok  zapping-live/cmd/server 3.7s        ok  zapping-live/internal/auth 18.2s
+ok  zapping-live/internal/config 1.0s   ok  zapping-live/internal/cuenta 1.4s
+ok  zapping-live/internal/hls 1.6s      ok  zapping-live/internal/storage 1.4s
+ok  zapping-live/internal/viewers 1.1s  ok  zapping-live/internal/web 16.9s
+```
+
+Los 150 tests **sin una sola advertencia de carrera**. Es la evidencia empírica de que la
+goroutine dueña del hub reemplaza de verdad al mutex y de que el snapshot del motor no
+comparte estado mutable.
+
+**Apagado ordenado**, verificado en contenedor porque Windows no entrega una señal de consola
+a un proceso lanzado en segundo plano:
+
+```bash
+$ docker run -d --name z -e DB_PATH=/tmp/z.db -e "SEGMENTS_DIR=/src/hls test" \
+    golang:1.26 sh -c 'CGO_ENABLED=0 go build -o /tmp/server ./cmd/server && exec /tmp/server'
+$ docker stop -t 15 z        # devolvió en 586 ms, con 15 s de plazo
+2026/08/03 08:18:47 pool cargado: 64 segmentos desde /src/hls test
+2026/08/03 08:18:47 escuchando en http://localhost:8080
+2026/08/03 08:18:48 señal recibida, apagando
+2026/08/03 08:18:48 apagado limpio
+```
+
+Código de salida 0. El servicio cierra en menos de un segundo con 15 disponibles, así que
+`docker stop` nunca llega a escalar a `SIGKILL` y el WAL de SQLite se cierra ordenadamente.
+
+**Hallazgo de esa prueba, importante para el bloque 05:** la misma verificación con
+`go run ./cmd/server` como PID 1 **falla** — ninguna línea de apagado y código de salida 2.
+`docker stop` señaliza sólo al proceso 1 y `go run` no relaya la señal al binario hijo. Es
+justo el tipo de error que se ve sano en desarrollo y pierde datos en producción.
+
+## Cómo se encontraron los defectos: mutar el código a propósito
+
+Vale la pena dejarlo escrito, porque es lo que efectivamente encontró los problemas y no una
+metodología declarada de adorno.
+
+Casi todos los defectos que aparecieron durante la implementación de este bloque **no fueron
+errores de lógica: fueron tests que no probaban lo que decían probar**. Se cerraron alrededor
+de diecisiete mutaciones silenciosas —cambios deliberados al código de producción que no
+hacían fallar ningún test—. Las cuatro más consecuentes:
+
+1. **El terminador del SSE.** Escribir `data: {...}\n` en vez de `\n\n` dejaba la suite entera
+   en verde, mientras el `EventSource` de un navegador real no habría despachado un solo
+   mensaje: el panel habría estado muerto, sin test rojo y sin una línea de log. Hoy lo fija
+   `TestSSEElMensajeTerminaEnLineaEnBlanco`.
+2. **`TestNingunVidrioSeSuperponeAlVideo`**, el test que hace cumplir la regla de CSS más
+   estricta del proyecto, no detectaba nada: su expresión regular capturaba el comentario
+   anterior como parte del selector, así que el nombre prohibido nunca coincidía. Poner
+   `backdrop-filter` en `.marco` pasaba limpio.
+3. **`WriteTimeout`.** Agregarlo al `http.Server` no rompía ningún test, y habría cortado en
+   silencio todas las conexiones SSE a los pocos segundos. Ahora hay un test que fija su
+   ausencia.
+4. **La garantía de que `Hub.Publicar` nunca bloquea** —la propiedad sobre la que se apoya
+   todo el diseño asíncrono— no tenía test aislado. Se agregó
+   `TestPublicarNoBloqueaConElHubDetenido`.
+
+El método fue pedirle a cada revisión que **mutara el código deliberadamente y comprobara si
+algún test se quejaba**: quitar un `default` de un `select`, borrar una llamada, cambiar una
+cabecera, sustituir `ServeContent` por `io.Copy`. Si la mutación no rompe nada, el test que
+debía cubrirla miente y hay que arreglarlo antes que al código.
+
+Es más barato de aplicar de lo que parece y responde a la única pregunta que importa de una
+suite de tests: no cuántos hay ni qué cobertura reportan, sino **qué defectos serían capaces
+de detectar**.
+
+## Restricciones que los bloques 02 y 03 dejaron, y dónde se cumplen
+
+Ya están todas honradas por el bloque 04. Se dejan escritas porque son la mitad del valor de
+haberlas anotado: sin este registro, cada una sería una convención que vive sólo en la cabeza
+de quien la escribió.
+
+Del bloque 02 (motor HLS):
 
 - **`Engine.Run` debe llamarse exactamente una vez** por instancia. La garantía de un solo
   escritor sobre el estado del motor es una convención documentada, no forzada por código:
@@ -244,6 +457,12 @@ Salieron de las revisiones del bloque 02 y hay que respetarlas al implementar el
 - **`Snapshot.Window` y `Snapshot.Playlist` son de sólo lectura.** Mutarlos corrompe el
   estado que ven todos los lectores concurrentes, porque comparten el array subyacente.
 
+Las cuatro se cumplen en `cmd/server` y en `internal/web`: `Engine.Run` tiene un único
+llamante en todo el proyecto; `Hub.Publicar` no bloquea y el hook no tiene nada que pueda
+entrar en pánico; el router registra `/live/stream.m3u8` y `/live/segments/{name}` como rutas
+hermanas; y `HookDeRotacion` copia los nombres de `Snapshot.Window` en vez de pasar el slice
+compartido. Hay test para las cuatro.
+
 Del bloque 03 (auth y base de datos):
 
 - **El alta de usuarios va por `cuenta.Registrar`, no por `Store.Crear`.** `Crear` recibe el
@@ -252,18 +471,49 @@ Del bloque 03 (auth y base de datos):
 - **El handler de login debe llamar a `auth.VerificarEnVacio()` cuando el email no existe.**
   Sin eso, un email inexistente responde en microsegundos y uno registrado paga los ~370 ms
   de bcrypt: el tiempo de respuesta revela qué cuentas existen aunque el mensaje de error sea
-  idéntico. La función está implementada y probada, pero **todavía no tiene llamante**.
+  idéntico. Este bloque le dio su **primer llamante**: `loginEnviar`, en la rama de
+  `ErrNoEncontrado`.
 - **El login debe rotar la sesión.** `Sessions.DestruirDeUsuario` antes de `Crear` previene
   session fixation. Nota de la revisión: como efecto colateral desconecta los demás
   dispositivos del usuario, cosa discutible en un producto de streaming; si molesta, basta
   con rotar el token y dejar `DestruirDeUsuario` para el cambio de contraseña.
-- **`Sessions.Limpiar` no la ejecuta nadie todavía.** Debe correr en una goroutine periódica
-  cancelable por contexto, o la tabla `sessions` crece sin límite.
+- **`Sessions.Limpiar` no la ejecutaba nadie.** Ahora la corre `limpiarSesiones` en
+  `cmd/server`: un barrido de entrada más un ticker de una hora, cancelable por contexto. Sin
+  ella la tabla `sessions` crece sin límite, porque cada login deja una fila que nadie borra
+  al vencer.
 - **`Sessions.Resolver` devuelve `(int64, bool, error)`.** El tercer valor distingue "la base
   falló" de "no hay sesión": ignorarlo produciría un bucle de redirección al login sin una
   sola línea de log si SQLite se cae.
 - **La cookie se emite con `Guard.PonerCookie(w, token)`**, que toma el TTL de `Sessions`.
   No pases el TTL por separado: si diverge, la cookie y la fila caducan en momentos distintos.
+
+## Restricciones que hereda el bloque 05 (Docker y entrega)
+
+- **El Dockerfile ya NO necesita `COPY web/`.** Los assets van embebidos en el binario con
+  `go:embed` y viven bajo `internal/web/`. Copiar un directorio `web/` que no existe haría
+  fallar el build.
+- **`SEGMENTS_DIR` debe apuntar al directorio que contiene `segment.m3u8`.** El servidor arma
+  la ruta como `filepath.Join(SEGMENTS_DIR, "segment.m3u8")` y **no levanta** si no lo
+  encuentra. Es deliberado: un servidor arriba sirviendo 404 parece sano —responde, el
+  healthcheck pasa— y el problema aparecería recién al intentar ver el stream.
+- **El healthcheck consulta la base.** Si el volumen de `/data` no es escribible por el
+  usuario `app`, `/healthz` responde 503 y Docker marca el contenedor como unhealthy. Es la
+  señal correcta, pero conviene saber que ese es el síntoma de un problema de permisos y no
+  de la base en sí.
+- **`SECURE_COOKIES=true` sin HTTPS por delante rompe el login**: la cookie no viaja y nadie
+  puede entrar. El default es `false` por eso.
+- **El apagado depende de que la señal llegue al proceso 1, y `go run` no sirve.** Verificado
+  empíricamente en contenedor (ver más abajo): con `go run ./cmd/server` como PID 1 el
+  `docker stop` no produce ni una línea de apagado y el contenedor sale con código 2, porque
+  `docker stop` señaliza sólo a PID 1 y `go run` no relaya la señal al binario hijo. Con el
+  binario compilado como PID 1 el apagado es limpio. Traducción para el Dockerfile:
+  `ENTRYPOINT ["/app/server"]` en **forma exec** y con el binario ya construido — nunca la
+  forma shell (la intercepta `/bin/sh`) ni `go run`.
+- **Las variables que el servidor lee** son `PORT` (8080), `DB_PATH` (`/data/zapping.db`),
+  `SEGMENTS_DIR` (`/app/segments`), `SESSION_TTL` (24h), `SECURE_COOKIES` (false) y
+  `WINDOW_SIZE` (3). Una variable **ausente** cae al default; una **presente pero ilegible**
+  aborta el arranque, para que nadie quede convencido de haber configurado algo que nunca se
+  aplicó.
 
 ## Optimización conocida y no aplicada
 
@@ -292,4 +542,8 @@ Puntos a cubrir, según lo que pidieron explícitamente:
 3. **El caso del segmento de 4,57s**: probablemente el detalle técnico más interesante del
    desarrollo, porque descarta la solución obvia (un ticker de 10s) por una razón concreta
    y verificable.
-4. **Copia a Nacho y Claudio**, como se indicó.
+4. **Cómo se verificó**, no sólo que se verificó: 150 tests sin carreras bajo `-race` en
+   Linux, la regla de dependencias comprobada con `go list -deps`, y sobre todo el método de
+   mutar el código para ver si algún test se queja. Es lo que separa una suite que mide algo
+   de una que sólo sube un número de cobertura.
+5. **Copia a Nacho y Claudio**, como se indicó.

@@ -13,8 +13,8 @@ los archivos que toca, sus criterios de aceptación y sus tests. Se implementan 
 | 01 | [01-diseno.md](01-diseno.md) | Spec completo: arquitectura, paquetes, flujo de datos, modelo, rutas | ✅ Acordado |
 | 02 | [02-motor-hls.md](02-motor-hls.md) | Pool, tabla de duraciones, snapshot inmutable, motor del reloj | ✅ Completo |
 | 03 | [03-auth-y-db.md](03-auth-y-db.md) | SQLite, usuarios, bcrypt, sesiones, middleware | ✅ Completo |
-| 04 | [04-web-y-frontend.md](04-web-y-frontend.md) | Handlers, templates, player, panel SSE, glassmorfismo | ⬜ Pendiente |
-| 05 | [05-docker-y-entrega.md](05-docker-y-entrega.md) | Dockerfile, preparación de segmentos, ejecución | ⬜ Pendiente |
+| 04 | [04-web-y-frontend.md](04-web-y-frontend.md) | Handlers, templates, player, panel SSE, glassmorfismo | ✅ Completo |
+| 05 | [05-docker-y-entrega.md](05-docker-y-entrega.md) | Dockerfile, preparación de segmentos, ejecución | ⬜ Pendiente — ojo: el `COPY web/` del diseño original **ya no aplica** (assets embebidos con `go:embed`) |
 | 06 | [06-decisiones.md](06-decisiones.md) | Justificaciones para el README y el correo de entrega | 🔄 Vivo |
 
 ## Orden de implementación y por qué
@@ -41,7 +41,11 @@ está en [06-decisiones.md](06-decisiones.md).
   monotónico + snapshot inmutable publicado con `atomic.Pointer`.
 - **Pool:** los 64 segmentos provistos, con `EXT-X-DISCONTINUITY` en la vuelta del ciclo.
 - **Frontend:** glassmorfismo sobre CSS propio, sin Bootstrap, sin `backdrop-filter`
-  encima del `<video>`. hls.js vendorizado.
+  encima del `<video>`. hls.js vendorizado y **embebido en el binario** con `go:embed`,
+  junto con las plantillas, el CSS y el JS: por eso viven bajo `internal/web/` y no en un
+  `web/` de la raíz, y por eso el Dockerfile no necesita copiarlos.
+- **Panel en vivo:** hub SSE con una goroutine dueña del conjunto de clientes (sin mutex) y
+  dos puntos de backpressure que descartan en vez de bloquear.
 - **Dependencias totales:** dos (`modernc.org/sqlite`, `golang.org/x/crypto`).
 
 ## Requisitos del enunciado y dónde se cumplen

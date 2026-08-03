@@ -3,7 +3,10 @@ segments/*
 !segments/.gitkeep
 hls test/
 
-# Binarios y datos locales
+# Binarios y datos locales.
+# Los tres patrones de *.db cubren también la base de las pruebas manuales con
+# `go run ./cmd/server` (tmp-zapping.db y sus -wal/-shm): no hace falta anotarla
+# aparte, pero sí que quede dicho para que nadie la agregue por las dudas.
 /server
 *.exe
 *.db
