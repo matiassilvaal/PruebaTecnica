@@ -22,6 +22,13 @@ func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
 // Crear da de alta un usuario. `hash` ya viene hasheado: este paquete no sabe
 // nada de bcrypt, sólo persiste lo que le den.
+//
+// Es la vía de BAJO NIVEL: no valida `name`/`email`/`hash` ni exige que
+// `hash` sea en efecto un hash (nada impide llamar
+// Crear(ctx, "Ana", "a@x.com", "miClaveEnClaro") y guardar la contraseña en
+// claro). Existe porque los tests de este paquete necesitan poblar filas sin
+// pagar el costo de bcrypt. El alta normal de un usuario debe pasar por
+// Registrar, que valida y hashea antes de llegar acá.
 func (s *Store) Crear(ctx context.Context, name, email, hash string) (*Usuario, error) {
 	normalizado := NormalizarEmail(email)
 	ahora := time.Now()
@@ -45,6 +52,27 @@ func (s *Store) Crear(ctx context.Context, name, email, hash string) (*Usuario, 
 		Email:     normalizado,
 		CreatedAt: ahora.Truncate(time.Second),
 	}, nil
+}
+
+// Registrar valida, hashea y persiste en un solo paso, para que ningún punto
+// de entrada pueda saltarse la validación ni guardar la contraseña en claro.
+//
+// Vive en `cuenta` y no en `auth` porque el alta es responsabilidad de este
+// paquete (es quien conoce `Validar` y `Store`); `hash` se recibe inyectado
+// en vez de importar `auth.HashPassword` directamente porque `auth` ya
+// importa `cuenta` (para `cuenta.Store` y `cuenta.Usuario` en el guard), y
+// una importación en el otro sentido sería un ciclo. Así el handler que dé de
+// alta un usuario sólo tiene un camino disponible: éste.
+func Registrar(ctx context.Context, s *Store, hash func(string) (string, error),
+	name, email, password string) (*Usuario, error) {
+	if err := Validar(name, email, password); err != nil {
+		return nil, err
+	}
+	h, err := hash(password)
+	if err != nil {
+		return nil, fmt.Errorf("hasheando la contraseña: %w", err)
+	}
+	return s.Crear(ctx, name, email, h)
 }
 
 // PorEmail devuelve el usuario y su hash por separado. El hash NO va dentro de
