@@ -64,7 +64,7 @@ func Validar(name, email, password string) error {
 	}
 	// mail.ParseAddress no basta: acepta formas como "Nombre <ana@x.com>",
 	// "<ana@x.com>" o "ana@x.com (comentario)", y las deja pasar sin avisar.
-	// Si guardáramos esas formas, NormalizarEmail("Nombre <ana@x.com>") no
+	// Si guardaramos esas formas, NormalizarEmail("Nombre <ana@x.com>") no
 	// colisionaría con NormalizarEmail("ana@x.com") en el UNIQUE de la base,
 	// permitiendo altas duplicadas y rompiendo el login cruzado. Por eso
 	// exigimos que la dirección ya extraída (.Address) coincida con lo que

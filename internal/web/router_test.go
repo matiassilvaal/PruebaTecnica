@@ -47,7 +47,7 @@ func TestEstaticosSeSirvenEmbebidos(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("código = %d, quiero 200", w.Code)
 	}
-	// no-cache no es "no guardar": es "guardá pero preguntá antes de usar".
+	// no-cache no es "no guardar": es "guarda pero pregunta antes de usar".
 	// Un max-age sin ETag dejaba al navegador con la copia vieja hasta que
 	// expirara, sin manera de preguntar si había cambiado.
 	if cc := w.Header().Get("Cache-Control"); cc != "no-cache" {

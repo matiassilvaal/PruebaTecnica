@@ -4,7 +4,7 @@
 <main class="acceso">
   <form class="tarjeta vidrio" method="post" action="/register">
     <h1 class="marca">zapping<span>·</span>live</h1>
-    <p class="sub">Creá tu cuenta para ver la transmisión.</p>
+    <p class="sub">Crea tu cuenta para ver la transmisión.</p>
 
     {{if .Error}}<p class="aviso" role="alert">{{.Error}}</p>{{end}}
 
@@ -19,7 +19,7 @@
     <p class="pista">Mínimo 8 caracteres.</p>
 
     <button type="submit">Crear cuenta</button>
-    <p class="pie">¿Ya tenés cuenta? <a href="/login">Iniciar sesión</a></p>
+    <p class="pie">¿Ya tienes cuenta? <a href="/login">Iniciar sesión</a></p>
   </form>
 </main>
 {{end}}

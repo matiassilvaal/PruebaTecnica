@@ -199,7 +199,7 @@ mecanismo de revalidación que Go daba gratis.
 **Decisión:** `Cache-Control: no-cache` más un `ETag` con el SHA-256 del contenido, calculado
 una vez al arrancar recorriendo el `embed.FS`.
 
-`no-cache` no significa "no cachear": significa "guardalo, pero preguntá antes de usarlo".
+`no-cache` no significa "no cachear": significa "guárdalo, pero pregunta antes de usarlo".
 Con el ETag, esa pregunta se responde con un 304 de unos cientos de bytes, así que hls.js
 —543 KB— se baja igual una sola vez.
 

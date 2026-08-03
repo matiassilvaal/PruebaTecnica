@@ -2550,7 +2550,7 @@ Expected: FAIL — las rutas no existen.
 <main class="acceso">
   <form class="tarjeta vidrio" method="post" action="/register">
     <h1 class="marca">zapping<span>·</span>live</h1>
-    <p class="sub">Creá tu cuenta para ver la transmisión.</p>
+    <p class="sub">Crea tu cuenta para ver la transmisión.</p>
 
     {{if .Error}}<p class="aviso" role="alert">{{.Error}}</p>{{end}}
 
@@ -2565,7 +2565,7 @@ Expected: FAIL — las rutas no existen.
     <p class="pista">Mínimo 8 caracteres.</p>
 
     <button type="submit">Crear cuenta</button>
-    <p class="pie">¿Ya tenés cuenta? <a href="/login">Iniciar sesión</a></p>
+    <p class="pie">¿Ya tienes cuenta? <a href="/login">Iniciar sesión</a></p>
   </form>
 </main>
 {{end}}
@@ -2580,7 +2580,7 @@ Expected: FAIL — las rutas no existen.
 <main class="acceso">
   <form class="tarjeta vidrio" method="post" action="/login">
     <h1 class="marca">zapping<span>·</span>live</h1>
-    <p class="sub">Entrá para ver la transmisión en vivo.</p>
+    <p class="sub">Inicia sesión para ver la transmisión en vivo.</p>
 
     {{if .Error}}<p class="aviso" role="alert">{{.Error}}</p>{{end}}
 
@@ -2591,7 +2591,7 @@ Expected: FAIL — las rutas no existen.
     <input id="contrasena" name="contrasena" type="password" autocomplete="current-password" required>
 
     <button type="submit">Entrar</button>
-    <p class="pie">¿No tenés cuenta? <a href="/register">Crear una</a></p>
+    <p class="pie">¿No tienes cuenta? <a href="/register">Crear una</a></p>
   </form>
 </main>
 {{end}}
@@ -2756,7 +2756,7 @@ func (p *manejadorPaginas) registroEnviar(w http.ResponseWriter, r *http.Request
 			datos.Error, datos.Campo = "Ya existe una cuenta con ese email.", "email"
 		default:
 			p.log.Printf("web: registrando a %q: %v", email, err)
-			datos.Error = "No se pudo crear la cuenta. Intentá de nuevo."
+			datos.Error = "No se pudo crear la cuenta. Intenta de nuevo."
 			p.render(w, "register", http.StatusInternalServerError, datos)
 			return
 		}
@@ -2785,7 +2785,7 @@ func (p *manejadorPaginas) loginEnviar(w http.ResponseWriter, r *http.Request) {
 		if !errors.Is(err, cuenta.ErrNoEncontrado) {
 			p.log.Printf("web: buscando %q: %v", email, err)
 			p.render(w, "login", http.StatusInternalServerError,
-				datosFormulario{Email: email, Error: "No se pudo iniciar sesión. Intentá de nuevo."})
+				datosFormulario{Email: email, Error: "No se pudo iniciar sesión. Intenta de nuevo."})
 			return
 		}
 		// El email no existe. Pagamos igual el costo de bcrypt: sin esto la
@@ -2810,7 +2810,7 @@ func (p *manejadorPaginas) loginEnviar(w http.ResponseWriter, r *http.Request) {
 	if err := p.sesiones.DestruirDeUsuario(r.Context(), u.ID); err != nil {
 		p.log.Printf("web: rotando la sesión de %d: %v", u.ID, err)
 		p.render(w, "login", http.StatusInternalServerError,
-			datosFormulario{Email: email, Error: "No se pudo iniciar sesión. Intentá de nuevo."})
+			datosFormulario{Email: email, Error: "No se pudo iniciar sesión. Intenta de nuevo."})
 		return
 	}
 	p.iniciarSesion(w, r, u.ID)

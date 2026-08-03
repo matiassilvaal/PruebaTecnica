@@ -4,7 +4,7 @@
 <main class="acceso">
   <form class="tarjeta vidrio" method="post" action="/login">
     <h1 class="marca">zapping<span>·</span>live</h1>
-    <p class="sub">Entrá para ver la transmisión en vivo.</p>
+    <p class="sub">Inicia sesión para ver la transmisión en vivo.</p>
 
     {{if .Error}}<p class="aviso" role="alert">{{.Error}}</p>{{end}}
 
@@ -15,7 +15,7 @@
     <input id="contrasena" name="contrasena" type="password" autocomplete="current-password" required>
 
     <button type="submit">Entrar</button>
-    <p class="pie">¿No tenés cuenta? <a href="/register">Crear una</a></p>
+    <p class="pie">¿No tienes cuenta? <a href="/register">Crear una</a></p>
   </form>
 </main>
 {{end}}

@@ -140,7 +140,7 @@ func (p *manejadorPaginas) registroEnviar(w http.ResponseWriter, r *http.Request
 			datos.Error, datos.Campo = "Ya existe una cuenta con ese email.", "email"
 		default:
 			p.log.Printf("web: registrando a %q: %v", email, err)
-			datos.Error = "No se pudo crear la cuenta. Intentá de nuevo."
+			datos.Error = "No se pudo crear la cuenta. Intenta de nuevo."
 			p.render(w, "register", http.StatusInternalServerError, datos)
 			return
 		}
@@ -169,7 +169,7 @@ func (p *manejadorPaginas) loginEnviar(w http.ResponseWriter, r *http.Request) {
 		if !errors.Is(err, cuenta.ErrNoEncontrado) {
 			p.log.Printf("web: buscando %q: %v", email, err)
 			p.render(w, "login", http.StatusInternalServerError,
-				datosFormulario{Email: email, Error: "No se pudo iniciar sesión. Intentá de nuevo."})
+				datosFormulario{Email: email, Error: "No se pudo iniciar sesión. Intenta de nuevo."})
 			return
 		}
 		// El email no existe. Pagamos igual el costo de bcrypt: sin esto la
@@ -194,7 +194,7 @@ func (p *manejadorPaginas) loginEnviar(w http.ResponseWriter, r *http.Request) {
 	if err := p.sesiones.DestruirDeUsuario(r.Context(), u.ID); err != nil {
 		p.log.Printf("web: rotando la sesión de %d: %v", u.ID, err)
 		p.render(w, "login", http.StatusInternalServerError,
-			datosFormulario{Email: email, Error: "No se pudo iniciar sesión. Intentá de nuevo."})
+			datosFormulario{Email: email, Error: "No se pudo iniciar sesión. Intenta de nuevo."})
 		return
 	}
 	p.iniciarSesion(w, r, u.ID)

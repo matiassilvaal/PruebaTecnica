@@ -21,7 +21,7 @@ DESTINO="${DESTINO:-dist}"
 IMAGEN="${IMAGEN:-zapping-live}"
 
 if [ ! -f segments/segment.m3u8 ]; then
-  echo "error: segments/ está vacío. Corré antes:" >&2
+  echo "error: segments/ está vacío. Ejecuta antes:" >&2
   echo "       ./scripts/prepare-segments.sh \"hls test\"" >&2
   exit 1
 fi
@@ -63,22 +63,22 @@ cat > "$DESTINO/LEEME.txt" <<'TXT'
 zapping-live — imagen Docker
 ============================
 
-Hay dos archivos. Cargá SÓLO EL QUE CORRESPONDA a tu máquina.
+Hay dos archivos. Carga SÓLO EL QUE CORRESPONDA a tu máquina.
 
   zapping-live-arm64.tar   Mac con Apple Silicon (M1, M2, M3, M4)
   zapping-live-amd64.tar   PC con Windows o Linux, y Mac con Intel
 
-Si no estás seguro, en una terminal:
+Si no sabes cuál, en una terminal:
 
-  uname -m      ->  arm64   usá el archivo arm64
-                ->  x86_64  usá el archivo amd64
+  uname -m      ->  arm64   usa el archivo arm64
+                ->  x86_64  usa el archivo amd64
 
-Cargar y levantar (reemplazá <archivo> por el que elegiste):
+Cargar y levantar (reemplaza <archivo> por el que corresponda):
 
   docker load -i <archivo>
   docker run -p 8080:8080 -v zapping-data:/data zapping-live
 
-Y abrí http://localhost:8080 — creá una cuenta y entrás al reproductor.
+Luego abre http://localhost:8080 — crea una cuenta y entras al reproductor.
 
 El volumen `zapping-data` hace que los usuarios registrados sobrevivan a un
 `docker stop` / `docker start`. Sin él, cada recreación del contenedor empieza
