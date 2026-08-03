@@ -28,9 +28,12 @@ BASE="http://localhost:$PUERTO"
 GALLETA="$(mktemp)"
 
 fallos=0
+total=0
 
-ok()    { printf '  \033[32mok\033[0m    %s\n' "$1"; }
-falla() { printf '  \033[31mFALLA\033[0m %s\n' "$1"; fallos=$((fallos + 1)); }
+# El total se cuenta acá y no se escribe a mano en ningún lado: cualquier número
+# fijo en el README o en los docs envejece en cuanto se agrega una comprobación.
+ok()    { total=$((total + 1)); printf '  \033[32mok\033[0m    %s\n' "$1"; }
+falla() { total=$((total + 1)); fallos=$((fallos + 1)); printf '  \033[31mFALLA\033[0m %s\n' "$1"; }
 
 limpiar() {
   d rm -f "$CONTENEDOR" >/dev/null 2>&1 || true
@@ -166,9 +169,9 @@ d volume rm "$VOLUMEN" >/dev/null 2>&1
 
 echo
 if [ "$fallos" -eq 0 ]; then
-  printf '\033[32mtodo en verde.\033[0m\n'
+  printf '\033[32m%d/%d en verde.\033[0m\n' "$total" "$total"
 else
-  printf '\033[31m%d comprobación(es) fallaron.\033[0m\n' "$fallos"
+  printf '\033[31m%d de %d comprobaciones fallaron.\033[0m\n' "$fallos" "$total"
 fi
 
 cat <<'MANUAL'
