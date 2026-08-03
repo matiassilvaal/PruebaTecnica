@@ -77,6 +77,9 @@ func NewRouter(d Deps) http.Handler {
 	mux.Handle("GET /live/stream.m3u8", d.Guard.RequireAPI(http.HandlerFunc(st.playlist)))
 	mux.Handle("GET /live/segments/{name}", d.Guard.RequireAPI(http.HandlerFunc(st.segmento)))
 
+	ev := &manejadorEventos{hub: d.Hub, log: d.Log}
+	mux.Handle("GET /live/events", d.Guard.RequireAPI(http.HandlerFunc(ev.sse)))
+
 	// El orden importa: registrar por fuera para que la línea de log exista
 	// también cuando el handler entra en pánico y recuperar lo atrapa.
 	return registrar(d.Log, recuperar(d.Log, mux))
