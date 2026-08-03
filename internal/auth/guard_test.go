@@ -124,13 +124,50 @@ func TestTokenInventadoNoPasa(t *testing.T) {
 }
 
 func TestSesionHuerfanaNoPasa(t *testing.T) {
-	// La sesión existe pero su usuario fue borrado: el guard debe rechazar,
-	// no explotar buscando un usuario inexistente.
+	// La sesión existe pero su usuario fue borrado: el guard debe rechazar
+	// en el chequeo usuarios.PorID, no explotar buscando un usuario
+	// inexistente.
+	//
+	// El esquema tiene sessions.user_id ON DELETE CASCADE, así que un DELETE
+	// FROM users normal borraría la sesión junto con el usuario y Resolver ya
+	// devolvería ok=false: el test "pasaría" sin ejercitar nunca la rama de
+	// usuarios.PorID que dice defender. Para crear una huérfana DE VERDAD hay
+	// que desactivar foreign_keys en la MISMA conexión que hace el DELETE
+	// (los pragmas son por conexión, y *sql.DB es un pool: pedir otra
+	// conexión al pool para el DELETE dejaría el pragma sin efecto ahí) y
+	// reactivarlo después para no afectar al resto de la suite.
 	g, sess, uid, ctx := nuevoGuard(t)
-	token, _ := sess.Crear(ctx, uid)
-	if _, err := sess.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, uid); err != nil {
+	token, err := sess.Crear(ctx, uid)
+	if err != nil {
 		t.Fatal(err)
 	}
+
+	conn, err := sess.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, uid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Si esto da 0, el CASCADE se disparó igual y la huérfana no se creó:
+	// el resto del test sería un placebo.
+	var sesionesRestantes int
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&sesionesRestantes); err != nil {
+		t.Fatal(err)
+	}
+	if sesionesRestantes != 1 {
+		t.Fatalf("quedaron %d sesiones tras el DELETE, quiero 1 (la huérfana)", sesionesRestantes)
+	}
+
 	var visto bool
 	var nombre string
 	req := httptest.NewRequest("GET", "/player", nil)
