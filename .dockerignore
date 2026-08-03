@@ -1,0 +1,23 @@
+# Sin esto el contexto de build subiría los ~500 MB de la carpeta de segmentos
+# original ADEMÁS de la copia que sí hace falta en segments/, y cada `docker
+# build` tardaría minutos en empezar.
+hls test/
+
+# Historia y documentación: no entran al binario ni a la imagen.
+.git
+.gitignore
+docs
+*.md
+*.pdf
+
+# Bases y binarios de las pruebas locales. Copiarlos rompería la imagen: el
+# .exe es de Windows y la base traería usuarios de prueba.
+*.db
+*.db-wal
+*.db-shm
+*.exe
+/server
+data/
+
+# Scratch del proceso de desarrollo.
+.superpowers/
