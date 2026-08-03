@@ -395,8 +395,8 @@ ok  zapping-live/internal/hls 2.0s   ok  zapping-live/internal/storage 1.0s
 ok  zapping-live/internal/viewers 1.3s   ok  zapping-live/internal/web 2.9s
 ```
 
-**153 tests** en total, 0 fallos, la suite completa en 5,2 s de reloj. Repartidos:
-`web` 51, `hls` 35, `auth` 25, `cuenta` 15, `viewers` 11, `storage` 9, `cmd/server` 4,
+**155 tests** en total, 0 fallos, la suite completa en ~5 s de reloj. Repartidos:
+`web` 53, `hls` 35, `auth` 25, `cuenta` 15, `viewers` 11, `storage` 9, `cmd/server` 4,
 `config` 3.
 
 ```bash
@@ -443,7 +443,7 @@ ok  zapping-live/internal/hls 1.6s      ok  zapping-live/internal/storage 1.4s
 ok  zapping-live/internal/viewers 1.1s  ok  zapping-live/internal/web 16.9s
 ```
 
-Los 153 tests **sin una sola advertencia de carrera**. Es la evidencia empírica de que la
+Los 155 tests **sin una sola advertencia de carrera**. Es la evidencia empírica de que la
 goroutine dueña del hub reemplaza de verdad al mutex y de que el snapshot del motor no
 comparte estado mutable.
 
@@ -651,7 +651,7 @@ Puntos a cubrir, según lo que pidieron explícitamente:
 3. **El caso del segmento de 4,57s**: probablemente el detalle técnico más interesante del
    desarrollo, porque descarta la solución obvia (un ticker de 10s) por una razón concreta
    y verificable.
-4. **Cómo se verificó**, no sólo que se verificó: 153 tests sin carreras bajo `-race` en
+4. **Cómo se verificó**, no sólo que se verificó: 155 tests sin carreras bajo `-race` en
    Linux, la regla de dependencias comprobada con `go list -deps`, y sobre todo el método de
    mutar el código para ver si algún test se queja. Es lo que separa una suite que mide algo
    de una que sólo sube un número de cobertura.

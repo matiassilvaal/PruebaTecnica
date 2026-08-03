@@ -221,7 +221,7 @@ Declararlas da más confianza que omitirlas.
 ## Desarrollo
 
 ```bash
-go test ./... -count=1     # 153 tests
+go test ./... -count=1     # 155 tests
 go vet ./...
 gofmt -l .
 
@@ -238,7 +238,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26 go test -race -count=1 ./...
 
 ### Sobre los tests
 
-153 en total. Lo que más valió la pena del proceso: **casi todos los defectos encontrados
+155 en total. Lo que más valió la pena del proceso: **casi todos los defectos encontrados
 fueron tests que no probaban lo que decían probar**, no errores de lógica. El método que los
 encontró fue mutar el código a propósito y comprobar si algún test se quejaba. Tres ejemplos
 reales de este proyecto:

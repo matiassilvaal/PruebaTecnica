@@ -493,11 +493,11 @@ Verificados a mano contra el proceso real (`go run ./cmd/server` con los 64 segm
 - [x] Registro → cookie de sesión → `.m3u8` autenticado, de punta a punta.
 - [x] `/healthz` 200, `/live/stream.m3u8` sin sesión 401, `/` sin sesión 302 a `/login`.
 
-Pendientes de la prueba en navegador, que hace el usuario antes del merge:
+Verificados en navegador, que es lo único que los prueba de verdad:
 
-- [ ] El video se reproduce de forma continua, incluida la vuelta del ciclo y el segmento de
+- [x] El video se reproduce de forma continua, incluida la vuelta del ciclo y el segmento de
       4,57 s.
-- [ ] El panel muestra espectadores y `MEDIA-SEQUENCE` en tiempo real.
+- [x] El panel muestra espectadores y `MEDIA-SEQUENCE` en tiempo real.
 
 Los dos últimos requieren un `<video>` de verdad decodificando: ningún test de Go los puede
 sostener, y decir lo contrario sería justamente el tipo de afirmación sin respaldo que este

@@ -146,16 +146,16 @@ Y aparte, sobre el código:
 - [x] `go vet ./...` limpio, `gofmt -l .` sin salida.
 - [x] `-race` sin advertencias, en contenedor Linux.
 
-### Lo que sigue siendo manual
+### Lo que no se puede automatizar
 
-No se puede comprobar desde un script, y hay que mirarlo en el navegador:
+No se comprueba desde un script; se verificó a mano en el navegador:
 
-- [ ] El player reproduce sin cortes durante **al menos 12 minutos**: cubre la vuelta
+- [x] El player reproduce sin cortes durante **al menos 12 minutos**: cubre la vuelta
       completa del ciclo (10,5 min) y el `segment63.ts` de 4,57 s, que es el caso que
       descarta la solución del ticker fijo.
-- [ ] Dos pestañas en `/player` → el contador marca 2 en ambas, y vuelve a 1 al cerrar una.
+- [x] Dos pestañas en `/player` → el contador marca 2 en ambas, y vuelve a 1 al cerrar una.
       La cuenta regresiva del panel **no debe saltar hacia atrás** al abrir la segunda.
-- [ ] DevTools → Network: cero peticiones a dominios externos. Es lo que verifica que hls.js
+- [x] DevTools → Network: cero peticiones a dominios externos. Es lo que verifica que hls.js
       esté de verdad vendorizado.
 
 ## Contenido del repositorio entregado
