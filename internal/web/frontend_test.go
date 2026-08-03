@@ -140,6 +140,11 @@ func TestPlayerCargaSusScripts(t *testing.T) {
 		"/static/player.js",
 		"/live/stream.m3u8",
 		"/live/events",
+		// Los atributos sobre el elemento concreto, no las URL sueltas en
+		// cualquier parte del cuerpo: player.js hace querySelector('.escenario')
+		// y lee su dataset, así que una URL correcta en otro elemento dejaría
+		// el player muerto con este test en verde.
+		`<main class="escenario" data-playlist="/live/stream.m3u8" data-eventos="/live/events">`,
 		`id="video"`,
 		`id="espectadores"`,
 		`id="secuencia"`,

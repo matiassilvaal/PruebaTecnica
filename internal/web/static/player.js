@@ -1,8 +1,9 @@
 // Player del livestream y panel de estado.
 //
 // Dos fuentes de datos independientes: hls.js consume el .m3u8 por HTTP, y un
-// EventSource recibe el estado del stream por SSE. No se hablan entre sí a
-// propósito — si el panel fallara, el video seguiría reproduciéndose.
+// EventSource recibe el estado del stream por SSE. El panel se monta dentro de
+// un try/catch para que ningún problema suyo pueda tumbar la reproducción: si
+// el panel falla, el video sigue.
 (function () {
   'use strict';
 
@@ -10,17 +11,26 @@
   var fallo = document.getElementById('fallo');
   var volver = document.getElementById('volver-al-vivo');
 
-  // Las URL llegan desde el HTML que renderiza el servidor, que es quien conoce
-  // su propio árbol de rutas. Repetirlas acá crearía una segunda fuente de
-  // verdad que puede divergir de la primera sin que nada se queje.
-  var escenario = document.querySelector('.escenario');
-  var urlPlaylist = escenario.dataset.playlist;
-  var urlEventos = escenario.dataset.eventos;
-
   function mostrarFallo(texto) {
+    if (!fallo) return;
     fallo.textContent = texto;
     fallo.hidden = false;
   }
+
+  // Las URL llegan desde el HTML que renderiza el servidor, que es quien conoce
+  // su propio árbol de rutas. Repetirlas acá crearía una segunda fuente de
+  // verdad que puede divergir de la primera sin que nada se queje.
+  //
+  // Sin este elemento no hay URL de playlist, así que tampoco hay nada que
+  // reproducir: se falla acá, con un mensaje, en vez de lanzar una excepción
+  // que dejaría la página muda.
+  var escenario = document.querySelector('.escenario');
+  if (!escenario || !escenario.dataset.playlist) {
+    mostrarFallo('No se pudo determinar la URL de la transmisión.');
+    return;
+  }
+  var urlPlaylist = escenario.dataset.playlist;
+  var urlEventos = escenario.dataset.eventos;
 
   // ---------- video ----------
 
@@ -89,7 +99,13 @@
   });
 
   // ---------- panel ----------
-
+  //
+  // Todo el panel va dentro de un try/catch. Es la única forma de sostener de
+  // verdad la promesa de la cabecera: el video ya está inicializado a esta
+  // altura, y una excepción acá —un id que alguien renombró en la plantilla,
+  // un EventSource que el navegador rechaza— abortaría el resto del script sin
+  // este aislamiento, dejando también el video sin sus manejadores.
+  try {
   var elEspectadores = document.getElementById('espectadores');
   var elSecuencia = document.getElementById('secuencia');
   var elVentana = document.getElementById('ventana');
@@ -155,10 +171,21 @@
   }
 
   function animar(ahora) {
-    var restante = Math.max(0, vencimiento - ahora);
-    elCuenta.textContent = (restante / 1000).toFixed(1) + ' s';
-    elProgreso.style.width = (100 - (restante / duracionTramo) * 100).toFixed(1) + '%';
+    // Hasta que llegue el primer evento no hay referencia que interpolar:
+    // pintar antes mostraría "0.0 s" y la barra llena durante un instante,
+    // como si la rotación estuviera vencida.
+    if (vencimiento > 0) {
+      var restante = Math.max(0, vencimiento - ahora);
+      elCuenta.textContent = (restante / 1000).toFixed(1) + ' s';
+      elProgreso.style.width = (100 - (restante / duracionTramo) * 100).toFixed(1) + '%';
+    }
     requestAnimationFrame(animar);
   }
   requestAnimationFrame(animar);
+
+  } catch (err) {
+    // El panel es la feature opcional; el video es el requisito. Si el panel
+    // no se pudo montar, se pierde el panel y nada más.
+    if (window.console) console.error('no se pudo montar el panel:', err);
+  }
 })();
