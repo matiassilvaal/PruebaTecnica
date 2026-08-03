@@ -148,6 +148,34 @@ func TestRegistrarValidaHasheaYPersiste(t *testing.T) {
 	}
 }
 
+// TestCreatedAtRoundTripEntreCrearYLecturas demuestra algo que hoy es cierto
+// pero que nada probaba: Crear devuelve CreatedAt truncado a segundos
+// (ahora.Truncate(time.Second)) y PorEmail/PorID lo reconstruyen desde el
+// entero Unix guardado (time.Unix(n, 0)); las tres vistas del mismo instante
+// deben coincidir. Si alguna cambiara de representación (por ejemplo,
+// guardar milisegundos, o dejar de truncar en Crear), este test lo notaría.
+func TestCreatedAtRoundTripEntreCrearYLecturas(t *testing.T) {
+	s, ctx := nuevoStore(t)
+	creado, err := s.Crear(ctx, "Ana", "ana@x.com", "h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	porEmail, _, err := s.PorEmail(ctx, "ana@x.com")
+	if err != nil {
+		t.Fatalf("PorEmail: %v", err)
+	}
+	porID, err := s.PorID(ctx, creado.ID)
+	if err != nil {
+		t.Fatalf("PorID: %v", err)
+	}
+	if !creado.CreatedAt.Equal(porEmail.CreatedAt) {
+		t.Errorf("CreatedAt de Crear = %v, de PorEmail = %v: no coinciden", creado.CreatedAt, porEmail.CreatedAt)
+	}
+	if !creado.CreatedAt.Equal(porID.CreatedAt) {
+		t.Errorf("CreatedAt de Crear = %v, de PorID = %v: no coinciden", creado.CreatedAt, porID.CreatedAt)
+	}
+}
+
 func TestUserNoExponeElHash(t *testing.T) {
 	s, ctx := nuevoStore(t)
 	if _, err := s.Crear(ctx, "Ana", "ana@x.com", "SECRETO"); err != nil {
