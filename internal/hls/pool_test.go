@@ -164,6 +164,48 @@ func TestLocateSecuenciaEstrictamenteCreciente(t *testing.T) {
 	}
 }
 
+func TestResolve(t *testing.T) {
+	p, err := ParseManifest(fixture)
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	path, ok := p.Resolve("segment2.ts")
+	if !ok {
+		t.Fatal("Resolve(segment2.ts) = false, quiero true")
+	}
+	if filepath.Base(path) != "segment2.ts" {
+		t.Errorf("Resolve devolvió %q", path)
+	}
+	if dir := filepath.Base(filepath.Dir(path)); dir != "testdata" {
+		t.Errorf("Resolve apunta a %q, esperaba dentro de testdata", path)
+	}
+}
+
+func TestResolveRechazaDesconocidos(t *testing.T) {
+	p, err := ParseManifest(fixture)
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	// Sólo se aceptan nombres que estén en el pool. Eso hace el path traversal
+	// imposible por construcción, no por saneamiento de la entrada.
+	maliciosos := []string{
+		"../../etc/passwd",
+		"..\\..\\windows\\system32\\config\\sam",
+		"/etc/passwd",
+		"segment2.ts/../../../etc/passwd",
+		"testdata/segment2.ts",
+		"segment99.ts",
+		"",
+		".",
+		"..",
+	}
+	for _, m := range maliciosos {
+		if path, ok := p.Resolve(m); ok {
+			t.Errorf("Resolve(%q) = %q, true; quiero false", m, path)
+		}
+	}
+}
+
 func TestLocateNoDeriva(t *testing.T) {
 	p, err := ParseManifest(fixture)
 	if err != nil {

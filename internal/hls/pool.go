@@ -161,3 +161,16 @@ func (p *Pool) Locate(elapsed time.Duration) (seq int64, until time.Duration) {
 
 	return cycles*n + int64(i), p.cum[i+1] - rem
 }
+
+// Resolve traduce el nombre de un segmento a su ruta en disco.
+//
+// Sólo acepta nombres presentes en el pool. Es una lista blanca, no un
+// saneamiento: cualquier intento de path traversal falla porque el nombre
+// simplemente no está en el índice, sin depender de limpiar la entrada bien.
+func (p *Pool) Resolve(name string) (string, bool) {
+	i, ok := p.index[name]
+	if !ok {
+		return "", false
+	}
+	return filepath.Join(p.dir, p.segments[i].Name), true
+}
