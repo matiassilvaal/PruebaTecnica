@@ -1,0 +1,13 @@
+{{define "base"}}<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{block "titulo" .}}Zapping Live{{end}}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+{{block "contenido" .}}{{end}}
+{{block "scripts" .}}{{end}}
+</body>
+</html>{{end}}

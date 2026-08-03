@@ -1,0 +1,25 @@
+{{define "titulo"}}Crear cuenta · Zapping Live{{end}}
+
+{{define "contenido"}}
+<main class="acceso">
+  <form class="tarjeta vidrio" method="post" action="/register">
+    <h1 class="marca">zapping<span>·</span>live</h1>
+    <p class="sub">Creá tu cuenta para ver la transmisión.</p>
+
+    {{if .Error}}<p class="aviso" role="alert">{{.Error}}</p>{{end}}
+
+    <label for="nombre">Nombre</label>
+    <input id="nombre" name="nombre" type="text" value="{{.Nombre}}" autocomplete="name" required autofocus>
+
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" value="{{.Email}}" autocomplete="email" required>
+
+    <label for="contrasena">Contraseña</label>
+    <input id="contrasena" name="contrasena" type="password" autocomplete="new-password" minlength="8" required>
+    <p class="pista">Mínimo 8 caracteres.</p>
+
+    <button type="submit">Crear cuenta</button>
+    <p class="pie">¿Ya tenés cuenta? <a href="/login">Iniciar sesión</a></p>
+  </form>
+</main>
+{{end}}

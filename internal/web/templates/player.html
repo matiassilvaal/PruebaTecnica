@@ -1,0 +1,17 @@
+{{define "titulo"}}En vivo · Zapping Live{{end}}
+
+{{define "contenido"}}
+<header class="barra">
+  <h1 class="marca">zapping<span>·</span>live</h1>
+  <div class="sesion">
+    <span class="quien">{{.Usuario.Name}}</span>
+    <form method="post" action="/logout"><button type="submit" class="enlace">Cerrar sesión</button></form>
+  </div>
+</header>
+
+<main class="escenario">
+  <div class="marco">
+    <video id="video" playsinline controls autoplay muted data-src="/live/stream.m3u8"></video>
+  </div>
+</main>
+{{end}}

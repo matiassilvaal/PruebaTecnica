@@ -53,6 +53,22 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("GET /healthz", salud(d.Salud))
 	mux.Handle("GET /static/", cacheDeAssets(http.FileServerFS(archivosEstaticos)))
 
+	pg := &manejadorPaginas{usuarios: d.Usuarios, sesiones: d.Sesiones, guard: d.Guard, log: d.Log}
+
+	// "GET /{$}" casa la raíz EXACTA. Sin el {$}, "GET /" sería el comodín que
+	// atrapa cualquier ruta no registrada y toda URL inexistente terminaría
+	// redirigiendo al login en vez de dar 404.
+	mux.HandleFunc("GET /{$}", pg.raiz)
+	mux.HandleFunc("GET /register", pg.registroForm)
+	mux.HandleFunc("POST /register", pg.registroEnviar)
+	mux.HandleFunc("GET /login", pg.loginForm)
+	mux.HandleFunc("POST /login", pg.loginEnviar)
+
+	// Registrar SÓLO el POST hace que un GET /logout devuelva 405 sin escribir
+	// una línea: con un GET, un <img src="/logout"> cerraría sesiones ajenas.
+	mux.Handle("POST /logout", d.Guard.RequirePage(http.HandlerFunc(pg.logout)))
+	mux.Handle("GET /player", d.Guard.RequirePage(http.HandlerFunc(pg.player)))
+
 	st := &manejadorStream{motor: d.Motor, pool: d.Pool, log: d.Log}
 
 	// Rutas HERMANAS, y eso es un contrato, no un gusto: las URI del .m3u8 son

@@ -1,0 +1,21 @@
+{{define "titulo"}}Iniciar sesión · Zapping Live{{end}}
+
+{{define "contenido"}}
+<main class="acceso">
+  <form class="tarjeta vidrio" method="post" action="/login">
+    <h1 class="marca">zapping<span>·</span>live</h1>
+    <p class="sub">Entrá para ver la transmisión en vivo.</p>
+
+    {{if .Error}}<p class="aviso" role="alert">{{.Error}}</p>{{end}}
+
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" value="{{.Email}}" autocomplete="email" required autofocus>
+
+    <label for="contrasena">Contraseña</label>
+    <input id="contrasena" name="contrasena" type="password" autocomplete="current-password" required>
+
+    <button type="submit">Entrar</button>
+    <p class="pie">¿No tenés cuenta? <a href="/register">Crear una</a></p>
+  </form>
+</main>
+{{end}}
