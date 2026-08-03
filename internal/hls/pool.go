@@ -92,8 +92,8 @@ func parseExtinf(line string) (time.Duration, error) {
 	if err != nil {
 		return 0, fmt.Errorf("EXTINF inválido %q: %w", line, err)
 	}
-	if secs <= 0 {
-		return 0, fmt.Errorf("EXTINF no positivo %q", line)
+	if math.IsNaN(secs) || math.IsInf(secs, 0) || secs <= 0 {
+		return 0, fmt.Errorf("EXTINF no positivo o no finito %q", line)
 	}
 	// math.Round evita que la imprecisión de float64 deje 4.566667s en
 	// 4566666999ns en vez de 4566667000ns.
@@ -146,6 +146,13 @@ func (p *Pool) At(i int) Segment { return p.segments[i] }
 //   - Los segmentos de duración distinta funcionan sin caso especial, porque
 //     `until` sale de la duración real del segmento vigente y no de una
 //     constante.
+//
+// Precondición de la que depende sort.Search: `cum` es estrictamente
+// creciente (cum[i] < cum[i+1] para todo i). La garantiza parseExtinf, que
+// rechaza cualquier EXTINF no positivo o no finito (NaN, +Inf, -Inf) antes de
+// que llegue a newPool; sin esa guarda una duración así produciría un `cum`
+// no creciente y el `sort.Search` de abajo dejaría de cumplir su contrato,
+// pudiendo devolver un índice fuera de rango.
 func (p *Pool) Locate(elapsed time.Duration) (seq int64, until time.Duration) {
 	if elapsed < 0 {
 		elapsed = 0
@@ -162,7 +169,13 @@ func (p *Pool) Locate(elapsed time.Duration) (seq int64, until time.Duration) {
 	return cycles*n + int64(i), p.cum[i+1] - rem
 }
 
-// Resolve traduce el nombre de un segmento a su ruta en disco.
+// Resolve traduce el nombre de un segmento a su ruta en disco, con
+// filepath.Join(dir, name) sobre el directorio del manifiesto. Eso NO
+// garantiza una ruta absoluta: si ParseManifest se llamó con una ruta
+// relativa, la ruta devuelta también lo es. En producción SEGMENTS_DIR es
+// absoluto (ver docs/01-diseno.md), así que en la práctica el resultado
+// también lo es, pero eso es una propiedad del llamador, no algo que Resolve
+// imponga.
 //
 // Sólo acepta nombres presentes en el pool. Es una lista blanca, no un
 // saneamiento: cualquier intento de path traversal falla porque el nombre

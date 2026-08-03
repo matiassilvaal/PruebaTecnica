@@ -1,6 +1,7 @@
 package hls
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,6 +72,37 @@ func TestParseManifestExtinfInvalido(t *testing.T) {
 	}
 	if _, err := ParseManifest(path); err == nil {
 		t.Fatal("quiero error para un EXTINF inválido")
+	}
+}
+
+func TestParseManifestExtinfNoFinitoONoPositivo(t *testing.T) {
+	// strconv.ParseFloat acepta "NaN"/"Inf"/"-Inf" sin error, y `secs <= 0` no
+	// atrapa NaN porque toda comparación con NaN es falsa. Sin la guarda
+	// explícita, math.Round(NaN*1e9) produce una Duration absurda (mínimo
+	// int64), `cum` deja de ser estrictamente creciente y la precondición de
+	// sort.Search en Locate se rompe: el servidor panickea al arrancar en vez
+	// de fallar limpio como promete docs/01-diseno.md.
+	casos := []struct {
+		nombre string
+		extinf string
+	}{
+		{"NaN", "NaN"},
+		{"Inf", "Inf"},
+		{"menos_Inf", "-Inf"},
+		{"negativo", "-5"},
+	}
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "malo.m3u8")
+			contenido := fmt.Sprintf("#EXTM3U\n#EXTINF:%s,\nsegment0.ts\n", c.extinf)
+			if err := os.WriteFile(path, []byte(contenido), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParseManifest(path); err == nil {
+				t.Fatalf("quiero error para EXTINF %q, no positivo ni finito", c.extinf)
+			}
+		})
 	}
 }
 
@@ -206,21 +238,43 @@ func TestResolveRechazaDesconocidos(t *testing.T) {
 	}
 }
 
-func TestLocateNoDeriva(t *testing.T) {
+// TestLocateRotacionesEncadenadas recorre el ciclo rotación a rotación,
+// encadenando cada `until` como haría Run, durante más de 2 vueltas
+// completas del fixture (5 segmentos). Antes se llamaba TestLocateNoDeriva y
+// sólo comprobaba el `seq` final tras 200 saltos — un nombre que prometía más
+// de lo que la prueba aislaba, porque pasaría igual con un ticker de
+// duración promedio fija. Verifica los dos invariantes centrales del diseño:
+//
+//  1. seq sube EXACTAMENTE +1 en cada rotación, sin saltos ni reinicios al
+//     dar la vuelta del ciclo.
+//  2. until siempre coincide con la duración real del segmento que queda en
+//     la cabeza de la ventana: es el invariante del que depende que el
+//     player no sufra cortes, porque el motor duerme exactamente lo que se
+//     tarda en consumir ese segmento.
+func TestLocateRotacionesEncadenadas(t *testing.T) {
 	p, err := ParseManifest(fixture)
 	if err != nil {
 		t.Fatalf("ParseManifest: %v", err)
 	}
-	// Simula 200 rotaciones encadenadas: si el motor incrementara un contador,
-	// los errores se acumularían. Derivando del reloj, la posición calculada
-	// tras N saltos coincide exactamente con la consulta directa.
-	var acumulado time.Duration
-	for i := 0; i < 200; i++ {
-		_, until := p.Locate(acumulado)
-		acumulado += until
-	}
-	seq, _ := p.Locate(acumulado)
-	if seq != 200 {
-		t.Errorf("tras 200 rotaciones seq = %d, quiero 200", seq)
+	n := int64(p.Len())
+
+	var elapsed time.Duration
+	var seqAnterior int64 = -1
+	rotaciones := int(2*n) + 3 // más de 2 vueltas completas
+	for i := 0; i < rotaciones; i++ {
+		seq, until := p.Locate(elapsed)
+
+		if seqAnterior >= 0 && seq != seqAnterior+1 {
+			t.Fatalf("rotación %d: seq pasó de %d a %d, quiero exactamente +1", i, seqAnterior, seq)
+		}
+		seqAnterior = seq
+
+		want := p.At(int(seq % n)).Duration
+		if until != want {
+			t.Fatalf("rotación %d (seq=%d): until = %v, quiero %v (duración de %s)",
+				i, seq, until, want, p.At(int(seq%n)).Name)
+		}
+
+		elapsed += until
 	}
 }

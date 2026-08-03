@@ -6,6 +6,17 @@ import (
 	"time"
 )
 
+// segmentURIPrefix es la ruta relativa bajo la que el playlist referencia sus
+// segmentos (p.ej. "segments/segment0.ts").
+//
+// CONTRATO CON EL LAYOUT HTTP, aunque este paquete no conozca HTTP: el
+// playlist DEBE servirse desde una ruta hermana de "segments/" — por ejemplo
+// "/live/stream.m3u8" con los segmentos en "/live/segments/". Si alguien
+// sirviera el playlist desde otra ruta (p.ej. "/stream.m3u8"), los enlaces a
+// los segmentos quedarían rotos y el stream daría 404 en silencio. Quien
+// escriba los handlers HTTP debe respetar esta disposición de rutas.
+const segmentURIPrefix = "segments/"
+
 // Snapshot es el estado del stream en un instante. Es INMUTABLE: una vez
 // construido no se modifica nunca. El motor publica snapshots nuevos en cada
 // rotación y descarta el anterior, en vez de mutar un estado compartido. Eso
@@ -86,7 +97,7 @@ func renderPlaylist(p *Pool, s *Snapshot) []byte {
 		if k > 0 && (s.Seq+int64(k))%n == 0 {
 			b.WriteString("#EXT-X-DISCONTINUITY\n")
 		}
-		fmt.Fprintf(&b, "#EXTINF:%.6f,\nsegments/%s\n", seg.Duration.Seconds(), seg.Name)
+		fmt.Fprintf(&b, "#EXTINF:%.6f,\n%s%s\n", seg.Duration.Seconds(), segmentURIPrefix, seg.Name)
 	}
 
 	// Sin EXT-X-ENDLIST a propósito: su ausencia es lo que le dice al player

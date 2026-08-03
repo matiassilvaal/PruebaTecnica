@@ -109,19 +109,87 @@ func TestEngineRotationHook(t *testing.T) {
 		recibidos = append(recibidos, s.Seq)
 	}))
 
+	// New no dispara el hook (ver TestEngineNewNoDisparaHook...): sólo publica
+	// el snapshot inicial en silencio. El hook empieza a contar desde acá.
+	if len(recibidos) != 0 {
+		t.Fatalf("tras New el hook ya recibió %d snapshots, quiero 0", len(recibidos))
+	}
+
 	r.Avanzar(10 * time.Second)
 	e.refresh()
 	r.Avanzar(10 * time.Second)
 	e.refresh()
 
-	// New publica el snapshot inicial, más dos refresh explícitos.
-	if len(recibidos) != 3 {
-		t.Fatalf("el hook recibió %d snapshots, quiero 3", len(recibidos))
+	if len(recibidos) != 2 {
+		t.Fatalf("el hook recibió %d snapshots, quiero 2", len(recibidos))
 	}
-	for i, want := range []int64{0, 1, 2} {
+	for i, want := range []int64{1, 2} {
 		if recibidos[i] != want {
 			t.Errorf("hook[%d] = %d, quiero %d", i, recibidos[i], want)
 		}
+	}
+}
+
+// TestEngineNewNoDisparaHookRunSiUnaVezPorSecuencia cubre el hallazgo de la
+// revisión final: New llamaba a refresh(), que disparaba el hook de forma
+// síncrona ANTES de que New devolviera. Con un hub SSE que arranca su goroutine
+// (`go hub.Run(ctx)`) recién después de construir el Engine, un Publish sobre
+// un canal sin lector todavía deadlockearía el arranque del servidor. Además,
+// como Run también llama a refresh() en su primera vuelta, el mismo seq=0 se
+// publicaba dos veces.
+//
+// El fix: New publica el snapshot inicial sin pasar por el hook. El hook
+// arranca a dispararse recién con Run, así que hay exactamente un evento por
+// rotación, incluida la inicial.
+func TestEngineNewNoDisparaHookRunSiUnaVezPorSecuencia(t *testing.T) {
+	p, err := ParseManifest(fixture)
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	// Segmentos de milisegundos para observar una rotación real sin esperar
+	// los 10s del material.
+	rapido := newPool([]Segment{
+		{Name: "a.ts", Duration: 20 * time.Millisecond},
+		{Name: "b.ts", Duration: 20 * time.Millisecond},
+		{Name: "c.ts", Duration: 20 * time.Millisecond},
+	}, p.dir)
+
+	var mu sync.Mutex
+	var recibidos []int64
+	e := New(rapido, WithRotationHook(func(s *Snapshot) {
+		mu.Lock()
+		recibidos = append(recibidos, s.Seq)
+		mu.Unlock()
+	}))
+
+	mu.Lock()
+	trasNew := len(recibidos)
+	mu.Unlock()
+	if trasNew != 0 {
+		t.Fatalf("New disparó el hook %d veces, quiero 0", trasNew)
+	}
+	if e.Current() == nil {
+		t.Fatal("Current() = nil tras New, aunque el hook no se haya disparado")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go e.Run(ctx)
+	time.Sleep(120 * time.Millisecond)
+	cancel()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(recibidos) == 0 {
+		t.Fatal("Run no disparó el hook en 120ms")
+	}
+	var vecesSeq0 int
+	for _, seq := range recibidos {
+		if seq == 0 {
+			vecesSeq0++
+		}
+	}
+	if vecesSeq0 != 1 {
+		t.Errorf("seq=0 se publicó %d veces por el hook, quiero exactamente 1 (recibidos=%v)", vecesSeq0, recibidos)
 	}
 }
 
