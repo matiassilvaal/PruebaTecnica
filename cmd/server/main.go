@@ -106,6 +106,13 @@ func run(registro *log.Logger) error {
 	sesiones := auth.NewSessions(db, cfg.TTLSesion)
 	guard := auth.NewGuard(sesiones, usuarios, cfg.CookiesSeguras)
 
+	// Estas tres goroutines NO se esperan antes del `defer db.Close()` de
+	// arriba, y es una decisión, no un olvido. Las tres salen por ctx.Done() en
+	// cuanto llega la señal, o sea antes de que Shutdown termine de drenar las
+	// conexiones; la única que toca la base es limpiarSesiones, y un DELETE que
+	// encuentre la base ya cerrada registra el error y sigue, sin corromper
+	// nada: SQLite hace commit o no lo hace. Esperarlas costaría un WaitGroup y
+	// tres cierres coordinados para cubrir un riesgo que no existe.
 	go hub.Run(ctx)
 	// Engine.Run EXACTAMENTE UNA VEZ por instancia, y este es el único
 	// llamante del proyecto: dos goroutines romperían la monotonía de

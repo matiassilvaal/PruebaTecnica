@@ -72,7 +72,12 @@
       }
     });
 
-    hls.on(Hls.Events.FRAG_BUFFERED, function () { fallo.hidden = true; });
+    // Con la misma guarda que mostrarFallo: si la plantilla no trae el cartel,
+    // esto no debe lanzar dentro de un manejador de hls.js, que corre por cada
+    // fragmento y dejaría la consola llena de excepciones.
+    hls.on(Hls.Events.FRAG_BUFFERED, function () {
+      if (fallo) fallo.hidden = true;
+    });
 
     hls.loadSource(urlPlaylist);
     hls.attachMedia(video);

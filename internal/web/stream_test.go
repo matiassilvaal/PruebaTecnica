@@ -39,9 +39,16 @@ func TestPlaylistCabeceras(t *testing.T) {
 }
 
 func TestPlaylistEsElDelSnapshot(t *testing.T) {
-	// El .m3u8 se renderiza una vez por rotación dentro del snapshot; el
-	// handler sólo escribe bytes ya listos. Si alguien lo re-renderizara por
-	// request, este test lo seguiría pasando, pero el de abajo lo delata.
+	// Lo que este test fija es el CONTENIDO: el cuerpo es byte a byte el
+	// playlist del snapshot vigente, y sus URI son relativas a segments/ —
+	// montar el .m3u8 fuera de la ruta hermana de los segmentos rompe esos
+	// enlaces.
+	//
+	// Lo que NO fija, ni acá ni en TestPlaylistNoMutaElSnapshotCompartido: que
+	// el playlist no se re-renderice por request. Un re-render determinista
+	// produce exactamente los mismos bytes y no toca el array compartido, así
+	// que ninguno de los dos lo vería. Detectarlo exigiría contar asignaciones
+	// (testing.AllocsPerRun sobre el handler), y no se hizo.
 	b := entorno(t)
 	_, galleta := usuarioConSesion(t, b)
 
