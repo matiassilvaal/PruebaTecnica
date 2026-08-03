@@ -1,0 +1,22 @@
+# Todo el texto se guarda y se saca en LF, también en Windows.
+#
+# El repositorio ya almacenaba LF, pero con core.autocrlf=true el árbol de
+# trabajo en Windows queda en CRLF. Eso tiene dos consecuencias reales:
+#
+#   - `gofmt -l .` marca todos los archivos, y el README le pide a quien evalúe
+#     que corra justamente eso.
+#   - Un `.sh` con CRLF empieza por `#!/usr/bin/env bash\r`, que en Linux y en
+#     macOS falla con "bad interpreter". Clonar el repositorio no tiene ese
+#     problema, pero empaquetar el directorio en un zip desde Windows sí.
+#
+# eol=lf fuerza LF en el árbol de trabajo de cualquier plataforma, así que las
+# dos vías quedan cubiertas.
+* text=auto eol=lf
+
+# Código de terceros: se entrega byte a byte como se descargó, sin que git le
+# toque los finales de línea.
+internal/web/static/vendor/** binary
+
+# Binarios.
+*.ts binary
+*.pdf binary
