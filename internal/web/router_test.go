@@ -47,8 +47,75 @@ func TestEstaticosSeSirvenEmbebidos(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("código = %d, quiero 200", w.Code)
 	}
-	if cc := w.Header().Get("Cache-Control"); !strings.Contains(cc, "max-age=") {
-		t.Errorf("Cache-Control = %q, quiero un max-age", cc)
+	// no-cache no es "no guardar": es "guardá pero preguntá antes de usar".
+	// Un max-age sin ETag dejaba al navegador con la copia vieja hasta que
+	// expirara, sin manera de preguntar si había cambiado.
+	if cc := w.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control = %q, quiero \"no-cache\"", cc)
+	}
+	if w.Header().Get("ETag") == "" {
+		t.Error("sin ETag no hay forma de revalidar: embed.FS tampoco da Last-Modified")
+	}
+}
+
+func TestEstaticosRevalidanCon304(t *testing.T) {
+	// El arreglo de un defecto del player quedó invisible una hora para quien
+	// ya había abierto la página: los estáticos se servían con max-age y sin
+	// ETag ni Last-Modified —embed.FS reporta ModTime cero, así que
+	// http.ServeContent omite Last-Modified— y el navegador no tenía con qué
+	// preguntar si el archivo había cambiado.
+	//
+	// Este test fija las dos mitades del arreglo: que se emita un ETag, y que
+	// un If-None-Match con ese valor devuelva 304 sin cuerpo. Sin la segunda,
+	// el ETag sería decorativo y hls.js (543 KB) viajaría entero en cada carga.
+	b := entorno(t)
+
+	primera := httptest.NewRecorder()
+	b.Handler.ServeHTTP(primera, httptest.NewRequest("GET", "/static/player.js", nil))
+	etag := primera.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("la primera respuesta no trae ETag")
+	}
+	if primera.Body.Len() == 0 {
+		t.Fatal("la primera respuesta llegó vacía")
+	}
+
+	r := httptest.NewRequest("GET", "/static/player.js", nil)
+	r.Header.Set("If-None-Match", etag)
+	segunda := httptest.NewRecorder()
+	b.Handler.ServeHTTP(segunda, r)
+
+	if segunda.Code != http.StatusNotModified {
+		t.Fatalf("código = %d, quiero 304", segunda.Code)
+	}
+	if segunda.Body.Len() != 0 {
+		t.Errorf("un 304 no lleva cuerpo, llegaron %d bytes", segunda.Body.Len())
+	}
+
+	// Y un ETag que no corresponde tiene que traer el archivo de nuevo: si no,
+	// el navegador se quedaría con una versión vieja para siempre.
+	otro := httptest.NewRequest("GET", "/static/player.js", nil)
+	otro.Header.Set("If-None-Match", `"0000000000000000"`)
+	tercera := httptest.NewRecorder()
+	b.Handler.ServeHTTP(tercera, otro)
+
+	if tercera.Code != http.StatusOK || tercera.Body.Len() == 0 {
+		t.Errorf("con un ETag distinto: código = %d, %d bytes; quiero 200 con cuerpo",
+			tercera.Code, tercera.Body.Len())
+	}
+}
+
+func TestElEtagCambiaConElContenido(t *testing.T) {
+	// Dos archivos distintos no pueden compartir huella, o desplegar un cambio
+	// en uno haría que el navegador siguiera usando la versión vieja del otro.
+	css := etagsEstaticos["/static/app.css"]
+	js := etagsEstaticos["/static/player.js"]
+
+	if css == "" || js == "" {
+		t.Fatalf("faltan ETags: css=%q js=%q", css, js)
+	}
+	if css == js {
+		t.Errorf("app.css y player.js comparten ETag (%s): la huella no depende del contenido", css)
 	}
 }
 

@@ -184,6 +184,29 @@ Un 200 diría que la petición se procesó correctamente, y no es cierto. 422 (U
 Content) es exacto y los navegadores renderizan el cuerpo igual, así que la corrección no
 cuesta nada. Las credenciales incorrectas van con 401; sólo un fallo de la base da 500.
 
+### Los estáticos revalidan con ETag en vez de confiar en un max-age
+
+**El defecto que lo motivó:** un arreglo del player quedó invisible durante una hora para
+quien ya había abierto la página. Los estáticos se servían con `max-age=3600` **y sin ETag ni
+Last-Modified**, así que el navegador no tenía con qué preguntar si el archivo había
+cambiado: usaba su copia vieja hasta que expirara.
+
+Lo de Last-Modified no es un olvido, es una propiedad de `embed.FS`: sus archivos reportan
+`ModTime` cero, y `http.ServeContent` omite la cabecera cuando la fecha es cero. Es decir que
+embeber los assets —que es lo que hace autosuficiente al binario— elimina de paso el único
+mecanismo de revalidación que Go daba gratis.
+
+**Decisión:** `Cache-Control: no-cache` más un `ETag` con el SHA-256 del contenido, calculado
+una vez al arrancar recorriendo el `embed.FS`.
+
+`no-cache` no significa "no cachear": significa "guardalo, pero preguntá antes de usarlo".
+Con el ETag, esa pregunta se responde con un 304 de unos cientos de bytes, así que hls.js
+—543 KB— se baja igual una sola vez.
+
+**Alternativa evaluada:** `max-age` largo con la huella del contenido en el nombre del
+archivo, que es lo que hace un bundler. Obligaría a reescribir las URL de las plantillas al
+vuelo; para tres archivos, revalidar sale más barato y no puede quedar desincronizado.
+
 ### El `.m3u8` y los `.ts` se cachean al revés a propósito
 
 El playlist con `no-cache, no-store`: uno cacheado le entrega al player una ventana vieja,

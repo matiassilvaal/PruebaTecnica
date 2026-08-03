@@ -6,8 +6,11 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 
@@ -103,14 +106,54 @@ func salud(comprobar func(context.Context) error) http.HandlerFunc {
 	}
 }
 
-// cacheDeAssets deja cachear los estáticos una hora.
+// etagsEstaticos guarda la huella del contenido de cada estático, calculada una
+// sola vez al arrancar.
 //
-// Una hora y no un año porque los nombres no llevan huella del contenido: con
-// `immutable`, un cambio de CSS quedaría invisible para quien ya visitó la
-// página. Los .ts sí usan `immutable`, porque su contenido nunca cambia.
+// Hace falta porque embed.FS no ofrece NINGUNA otra forma de revalidar: sus
+// archivos reportan ModTime cero, y http.ServeContent omite Last-Modified
+// cuando la fecha es cero. Sin ETag ni Last-Modified, un `max-age` deja al
+// navegador con la copia vieja hasta que expire, sin manera de preguntar si
+// cambió. Es exactamente lo que pasó: un arreglo del player desplegado y
+// funcionando, invisible durante una hora para quien ya había abierto la página.
+var etagsEstaticos = calcularEtags()
+
+func calcularEtags() map[string]string {
+	m := make(map[string]string)
+	fs.WalkDir(archivosEstaticos, ".", func(ruta string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		datos, err := archivosEstaticos.ReadFile(ruta)
+		if err != nil {
+			return err
+		}
+		suma := sha256.Sum256(datos)
+		// Comillas incluidas: es la sintaxis que exige la RFC 9110 para un ETag
+		// fuerte, y sin ellas los intermediarios lo descartan.
+		m["/"+ruta] = `"` + hex.EncodeToString(suma[:16]) + `"`
+		return nil
+	})
+	return m
+}
+
+// cacheDeAssets hace que el navegador revalide los estáticos en cada carga.
+//
+// `no-cache` no significa "no cachear": significa "guardalo, pero preguntá antes
+// de usarlo". Con el ETag puesto, esa pregunta se responde con un 304 de unos
+// pocos cientos de bytes, así que hls.js —543 KB— se baja una sola vez igual.
+//
+// La alternativa sería un `max-age` largo con la huella del contenido en el
+// nombre del archivo. Eso obligaría a reescribir las URL en las plantillas al
+// vuelo; para tres archivos, revalidar sale más barato y no puede quedar
+// desincronizado.
 func cacheDeAssets(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "public, max-age=3600")
+		if etag, ok := etagsEstaticos[r.URL.Path]; ok {
+			// Se pone ANTES de delegar: http.ServeContent lee el ETag de la
+			// cabecera ya escrita para resolver el If-None-Match y devolver 304.
+			w.Header().Set("ETag", etag)
+		}
+		w.Header().Set("Cache-Control", "no-cache")
 		next.ServeHTTP(w, r)
 	})
 }
