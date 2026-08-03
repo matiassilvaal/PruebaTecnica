@@ -33,7 +33,13 @@ const intervaloLimpieza = time.Hour
 // plazoApagado es lo que se le da a las conexiones en curso al recibir la
 // señal. Las de SSE ya se habrán ido por su cuenta: la cancelación del
 // contexto cierra el hub y sus handlers vuelven.
-const plazoApagado = 10 * time.Second
+//
+// Ocho y no diez para que quepa DENTRO del plazo de `docker stop`, que manda
+// SIGKILL a los 10 s de haber mandado SIGTERM. Con los dos números iguales no
+// queda margen: una sola conexión trabada agotaría el plazo justo cuando el
+// runtime la mata, y el apagado limpio se vería como un contenedor matado a la
+// fuerza. En la práctica el proceso termina en ~600 ms y esto nunca se toca.
+const plazoApagado = 8 * time.Second
 
 // nuevoServidor arma el http.Server con sus tiempos límite.
 //
@@ -47,6 +53,11 @@ func nuevoServidor(puerto string, h http.Handler) *http.Server {
 		Handler: h,
 		// Contra slowloris, sin tocar las respuestas largas.
 		ReadHeaderTimeout: 10 * time.Second,
+		// IdleTimeout sólo corre ENTRE peticiones de una conexión keep-alive,
+		// nunca durante una respuesta en curso: no puede tocar un SSE abierto.
+		// Sin él, cada pestaña que se va sin cerrar la conexión deja una
+		// conexión ociosa retenida hasta que el sistema operativo la tire.
+		IdleTimeout: 120 * time.Second,
 		// SIN WriteTimeout a propósito: cortaría toda conexión SSE a los pocos
 		// segundos, que es justo lo que este servicio necesita mantener
 		// abierto. El problema que WriteTimeout resuelve —clientes que no
@@ -146,10 +157,16 @@ func run(registro *log.Logger) error {
 		registro.Print("señal recibida, apagando")
 	}
 
-	// El orden importa: al llegar acá el contexto raíz ya está cancelado, así
-	// que el hub cerró los canales de sus clientes y los handlers SSE ya
-	// volvieron. Si Shutdown fuera primero, esperaría el plazo completo a que
-	// se cerraran unas conexiones diseñadas para no cerrarse nunca.
+	// Al llegar acá el contexto raíz ya está cancelado, así que el hub ya está
+	// cerrando los canales de sus clientes y sus handlers SSE ya están
+	// volviendo. Es una CARRERA con este Shutdown, no una precedencia: nada
+	// obliga al hub a terminar antes. Y es benigna en las dos direcciones —
+	// Shutdown se queda esperando a las conexiones vivas y el hub las libera en
+	// microsegundos (el apagado completo se mide en ~600 ms), y si alguna vez
+	// el hub quedara sin CPU el peor caso es agotar plazoApagado, no una
+	// respuesta a medias. Lo que sí rompería es apagar SIN cancelar antes:
+	// Shutdown esperaría el plazo entero a unas conexiones diseñadas para no
+	// cerrarse nunca.
 	ctxApagado, cancelar := context.WithTimeout(context.Background(), plazoApagado)
 	defer cancelar()
 	if err := srv.Shutdown(ctxApagado); err != nil {

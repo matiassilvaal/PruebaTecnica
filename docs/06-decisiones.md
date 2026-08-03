@@ -173,6 +173,11 @@ prolijidad: agregarlo "por prudencia" es exactamente el cambio que alguien hace 
 que nada se queje, y el síntoma —conexiones SSE que se cortan solas— aparecería lejos de la
 causa.
 
+`IdleTimeout` sí va, y el mismo test lo exige: sólo corre **entre** peticiones de una conexión
+keep-alive, así que no puede tocar un SSE en curso, y sin él una pestaña que se va sin cerrar
+la conexión la deja retenida hasta que el sistema operativo la tire. Las dos aserciones viven
+juntas a propósito, para que quien agregue un timeout no agregue el otro de paso.
+
 ### Errores de formulario con 422, no con 200
 
 Un 200 diría que la petición se procesó correctamente, y no es cierto. 422 (Unprocessable
@@ -183,12 +188,20 @@ cuesta nada. Las credenciales incorrectas van con 401; sólo un fallo de la base
 
 El playlist con `no-cache, no-store`: uno cacheado le entrega al player una ventana vieja,
 que lo lleva a pedir segmentos ya expirados y a cortar la reproducción. Los segmentos con
-`max-age=31536000, immutable`: su contenido no cambia nunca, así que revisitar la ventana no
-vuelve a costarle disco al servidor. Direcciones opuestas, cada una por una razón concreta.
+`private, max-age=31536000, immutable`: su contenido no cambia nunca, así que revisitar la
+ventana no vuelve a costarle disco al servidor. Direcciones opuestas, cada una por una razón
+concreta.
 
-Los estáticos (`/static/*`) quedan en el medio, con `max-age=3600` y sin `immutable`: sus
-nombres no llevan huella del contenido, así que con `immutable` un cambio de CSS sería
-invisible para quien ya visitó la página.
+El `private` de los `.ts` no es decoración: esa ruta está detrás de la sesión, y una cookie
+—a diferencia de un `Authorization`— no impide por sí sola que una caché compartida guarde la
+respuesta. Un `public` ahí sería una autorización explícita para que un proxy sirviera un
+segmento autenticado durante un año a cualquiera, que es justo lo que el requisito 4 prohíbe.
+La caché del navegador, que es de donde sale el ahorro, funciona igual con `private`.
+
+Los estáticos (`/static/*`) quedan en el medio, con `public, max-age=3600` y sin `immutable`:
+`public` acá sí corresponde porque no están protegidos, y no llevan `immutable` porque sus
+nombres no tienen huella del contenido, así que un cambio de CSS sería invisible para quien ya
+visitó la página.
 
 ### Toda la ruta del stream está protegida, no sólo `/player`
 

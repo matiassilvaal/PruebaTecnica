@@ -95,11 +95,18 @@ recibe una ventana vieja, se sale del rango disponible y se corta.
 // GET /live/segments/{name}
 // - valida el nombre contra el pool (rechaza path traversal)
 // - http.ServeContent sobre el *os.File
-w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 ```
 
-Los `.ts` sí se cachean agresivamente: su contenido nunca cambia. Y `ServeContent` copia por
-bloques, así que un segmento de 13 MB no entra completo en RAM.
+Los `.ts` sí se cachean agresivamente: su contenido nunca cambia. Pero `private`, no `public`:
+la ruta va detrás de `RequireAPI`, y una cookie de sesión no inhibe por sí sola el
+almacenamiento compartido (eso sólo lo hace un `Authorization`). Con `public` cualquier caché
+intermedia quedaría autorizada a guardar un segmento autenticado y servírselo durante un año a
+quien no tiene cuenta. El ahorro no se pierde, porque viene de la caché del navegador.
+
+Y `ServeContent` copia por bloques, así que un segmento de 13 MB no entra completo en RAM. El
+envoltorio de logging reexpone `io.ReaderFrom` además de `http.Flusher` justamente para no
+tapar el camino de copia cero que `ServeContent` elige cuando el writer lo ofrece.
 
 ## `internal/viewers` — el hub SSE
 
@@ -233,11 +240,18 @@ cierra el navegador.
 }
 ```
 
-Dos cosas las pone el hub, no el llamante:
+Tres cosas las pone el hub, no el llamante:
 
 - **`viewers`.** El hook de rotación no sabe cuántos espectadores hay; el hub es el único que
   lo sabe, así que completa ese campo al difundir. Por eso `HookDeRotacion` publica el evento
   con `Espectadores` en cero y llega al panel con el número correcto.
+- **`nextRotationMs`.** El hook publica el **instante** de la próxima rotación (`ProximaEn`,
+  fuera del JSON) y el hub deriva los milisegundos **al enviar**. Tiene que ser así porque el
+  hub reenvía el último evento en cada alta y cada baja: con el plazo calculado al publicar,
+  abrir una segunda pestaña le mandaba a todos los espectadores la cuenta del momento de la
+  rotación, y en el navegador el contador saltaba hacia atrás —de "3.0 s" a "10.0 s"— con la
+  barra de progreso de vuelta a cero. Calculado en el envío, cada destinatario recibe el
+  plazo relativo al instante en que se le mandó a él.
 - **El último evento se recuerda.** `Run` guarda el estado más reciente y se lo entrega al
   instante a quien se conecta. Sin eso el panel quedaría vacío hasta la próxima rotación —
   hasta 10 segundos mirando ceros—, y además sirve para reconstruir el evento cuando lo único
@@ -380,10 +394,22 @@ completo a que se cerraran unas conexiones SSE diseñadas para no cerrarse nunca
 antes, el hub cierra los canales de sus clientes, los handlers SSE vuelven solos y `Shutdown`
 termina en milisegundos.
 
+Lo que la cancelación **no** da es una precedencia: cerrar los canales del hub es una carrera
+con `Shutdown`, no un paso anterior. Es benigna en las dos direcciones — `Shutdown` bloquea
+esperando a las conexiones vivas y el hub las libera en microsegundos (el apagado completo se
+midió en ~586 ms), y si el hub quedara sin CPU el peor caso es agotar `plazoApagado`, no una
+respuesta a medias.
+
+`plazoApagado` son **8 s y no 10** para que quepa dentro del plazo de `docker stop`, que manda
+SIGKILL a los 10 s del SIGTERM: con los dos números iguales no hay margen y una sola conexión
+trabada convertiría un apagado limpio en un contenedor matado a la fuerza.
+
 Dos cosas que el archivo declara como decisión y no como olvido:
 
-- **Sin `WriteTimeout`** en el `http.Server` (ver `docs/06-decisiones.md`). Hay un test que
-  fija su ausencia.
+- **Sin `WriteTimeout`** en el `http.Server` (ver `docs/06-decisiones.md`), pero **con
+  `IdleTimeout`** de 120 s: ese sólo corre entre peticiones de una conexión keep-alive y no
+  puede tocar un SSE en curso. Un test fija las dos cosas a la vez, para que nadie "arregle"
+  la ausencia de `WriteTimeout` al agregar el otro.
 - **Las tres goroutines no se esperan** antes del `defer db.Close()`. Las tres salen por
   `ctx.Done()` casi al instante, la única que toca la base registra el error y sigue, y
   SQLite hace commit o no lo hace. Esperarlas costaría un `WaitGroup` y tres cierres
@@ -409,7 +435,7 @@ Los que sostienen una afirmación del documento, no los 66:
 | `TestPlaylistSinSesionEs401` | 401 y no 302: con un redirect, hls.js parsearía la página de login como playlist |
 | `TestSegmentoTraversal` | `../` y `%2e%2e%2f` nunca sirven un archivo fuera del pool (404, o 301 si el mux limpió la ruta) |
 | `TestSegmentoSoportaRangos` | 206 y el rango pedido: es lo que `ServeContent` da y `io.Copy` no |
-| `TestSegmentoSirveElArchivo` | `video/mp2t`, `max-age=31536000`, `immutable` |
+| `TestSegmentoSirveElArchivo` | `video/mp2t`, `private`, `max-age=31536000`, `immutable`, y nunca `public` detrás de la sesión |
 | `TestRegistroCreaLaCuentaYDejaSesionIniciada` | El alta pasa por `cuenta.Registrar`: la contraseña queda hasheada, no en claro |
 | `TestRegistroInvalidoConservaLoTipeado` | 422 con nombre y email de vuelta, sin la contraseña |
 | `TestRegistroEscapaElHTML` | El escapado contextual de `html/template` cubre XSS |
@@ -429,11 +455,15 @@ Los que sostienen una afirmación del documento, no los 66:
 | `TestHookDeRotacionNoBloqueaConElHubDetenido` | Lo mismo desde el lado del motor: el hook no detiene la rotación |
 | `TestHubDesconexionNoDejaGoroutines` | Cancelar el contexto des-registra y no deja goroutines |
 | `TestHubEntregaElUltimoEstadoAlConectar` | El hub recuerda el último evento y lo entrega al suscribirse |
+| `TestElReenvioNoEntregaUnaCuentaRegresivaVieja` | El reenvío por alta/baja recalcula `nextRotationMs`: sin esto el contador del panel saltaba hacia atrás al abrir una segunda pestaña |
+| `TestSinRotacionLaCuentaRegresivaEsCero` | Sin rotación previa el plazo es 0, no un negativo enorme derivado de un `time.Time` cero |
 | `TestNingunVidrioSeSuperponeAlVideo` | Ningún selector con `backdrop-filter` toca el `<video>` |
 | `TestElFrontendNoPideNadaAInternet` | Ni CSS, ni JS, ni plantillas referencian dominios externos |
 | `TestElJsNoHardcodeaLasRutasDelStream` | Las URL del stream salen del HTML, no del JS |
-| `TestElServidorNoLlevaWriteTimeout` | Fija la ausencia de `WriteTimeout`: agregarlo cortaría todo el SSE |
+| `TestElServidorNoLlevaWriteTimeout` | Fija la ausencia de `WriteTimeout` y la presencia de `IdleTimeout`, para que no se "arreglen" juntos |
 | `TestRespuestaObservadaConservaElFlusher` | El middleware de log no rompe la aserción a `http.Flusher` del SSE |
+| `TestRespuestaObservadaConservaElReaderFrom` | Ni la de `io.ReaderFrom`, que es la que le deja a `ServeContent` la copia cero del `.ts` |
+| `TestCargarDefaults` | Los defaults se afirman con el entorno LIMPIO: un shell (o una imagen) con `PORT` puesto no puede decidir el resultado |
 
 `TestHubClienteLentoNoBloqueaALosDemas` y `TestPublicarNoBloqueaConElHubDetenido` son los que
 respaldan la afirmación sobre manejo de RAM y sobre sync/async: conviene que existan y que se

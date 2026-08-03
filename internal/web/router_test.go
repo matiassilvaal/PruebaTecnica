@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -186,5 +187,42 @@ func TestRespuestaObservadaConservaElFlusher(t *testing.T) {
 
 	if !vioFlusher {
 		t.Fatal("el writer envuelto no implementa http.Flusher: el SSE no podría vaciar")
+	}
+}
+
+func TestRespuestaObservadaConservaElReaderFrom(t *testing.T) {
+	// Mismo hueco que el del Flusher, con un costo distinto: http.ServeContent
+	// pregunta por io.ReaderFrom para mandar el .ts sin copiarlo por el espacio
+	// de usuario. Envuelto y sin reexponerlo, cada segmento pasaría por un
+	// buffer intermedio de 32 KB — invisible en los tests del handler aislado y
+	// pagado en producción, que es donde los middlewares están puestos.
+	var vioReaderFrom bool
+	var copiado int64
+	interior := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		rf, ok := w.(io.ReaderFrom)
+		vioReaderFrom = ok
+		if !ok {
+			return
+		}
+		n, err := rf.ReadFrom(strings.NewReader("contenido del segmento"))
+		if err != nil {
+			t.Errorf("ReadFrom: %v", err)
+		}
+		copiado = n
+	})
+	h := registrar(log.New(&bufferDeLog{}, "", 0), interior)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/live/segments/segment0.ts", nil))
+
+	if !vioReaderFrom {
+		t.Fatal("el writer envuelto no implementa io.ReaderFrom: ServeContent copiaría el segmento a mano")
+	}
+	if copiado != int64(len("contenido del segmento")) {
+		t.Errorf("ReadFrom copió %d bytes, quiero %d", copiado, len("contenido del segmento"))
+	}
+	// El writer de httptest no implementa io.ReaderFrom, así que este camino es
+	// justamente el io.Copy de respaldo: los bytes tienen que llegar igual.
+	if got := w.Body.String(); got != "contenido del segmento" {
+		t.Errorf("cuerpo = %q", got)
 	}
 }

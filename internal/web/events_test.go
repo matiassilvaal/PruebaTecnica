@@ -107,11 +107,13 @@ func TestSSERecibeLasRotaciones(t *testing.T) {
 	_, br := abrirSSE(t, srv, galleta)
 	leerEvento(t, br) // el estado inicial
 
-	// Simula una rotación del motor por la misma vía que usa cmd/server.
+	// Simula una rotación del motor por la misma vía que usa cmd/server: lo que
+	// se publica es el INSTANTE de la próxima rotación, y los milisegundos que
+	// llegan al navegador los deriva el hub al enviar.
 	b.Hub.Publicar(viewers.Evento{
 		Secuencia:      77,
 		Ventana:        []string{"segment7.ts", "segment8.ts", "segment9.ts"},
-		ProximaEnMs:    4200,
+		ProximaEn:      time.Now().Add(4200 * time.Millisecond),
 		Discontinuidad: true,
 	})
 
@@ -122,8 +124,10 @@ func TestSSERecibeLasRotaciones(t *testing.T) {
 	if len(e.Ventana) != 3 || e.Ventana[0] != "segment7.ts" {
 		t.Errorf("Ventana = %v", e.Ventana)
 	}
-	if e.ProximaEnMs != 4200 {
-		t.Errorf("ProximaEnMs = %d, quiero 4200", e.ProximaEnMs)
+	// Un rango y no la igualdad: el plazo se cuenta desde el envío, así que lo
+	// que sale por el cable es 4200 menos lo que tardó el viaje.
+	if e.ProximaEnMs <= 3000 || e.ProximaEnMs > 4200 {
+		t.Errorf("ProximaEnMs = %d, quiero algo en (3000, 4200]", e.ProximaEnMs)
 	}
 	if !e.Discontinuidad {
 		t.Error("Discontinuidad = false, quiero true")

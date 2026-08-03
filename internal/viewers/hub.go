@@ -9,6 +9,7 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // capacidadCliente es el buffer de eventos por espectador.
@@ -31,11 +32,41 @@ const capacidadDifusion = 8
 // vivo mucho después de la llamada y lo comparten todos los espectadores:
 // mutarlo corrompería lo que ven todos.
 type Evento struct {
-	Espectadores   int64    `json:"viewers"`
-	Secuencia      int64    `json:"sequence"`
-	Ventana        []string `json:"window"`
-	ProximaEnMs    int64    `json:"nextRotationMs"`
-	Discontinuidad bool     `json:"discontinuity"`
+	Espectadores int64    `json:"viewers"`
+	Secuencia    int64    `json:"sequence"`
+	Ventana      []string `json:"window"`
+
+	// ProximaEn es el instante ABSOLUTO de la próxima rotación, y es lo único
+	// que pone quien publica. Fuera del JSON a propósito: el navegador sigue
+	// recibiendo sólo ProximaEnMs.
+	//
+	// Guardar el instante y no los milisegundos es lo que hace que el reenvío
+	// sea correcto. El hub redifunde este mismo evento cada vez que entra o
+	// sale un espectador; con una cuenta ya calculada al publicar, esos
+	// reenvíos le mandarían a todos el plazo del momento de la rotación y el
+	// contador del panel saltaría hacia atrás en cada alta.
+	ProximaEn time.Time `json:"-"`
+
+	// ProximaEnMs lo completa el hub AL ENVIAR, derivándolo de ProximaEn:
+	// fijarlo desde fuera no sirve de nada porque se pisa.
+	ProximaEnMs int64 `json:"nextRotationMs"`
+
+	Discontinuidad bool `json:"discontinuity"`
+}
+
+// faltaEnMs es cuánto queda para la rotación, medido desde `ahora`.
+//
+// Un evento sin instante de rotación —el estado inicial, previo a la primera—
+// vale 0, igual que uno cuyo plazo ya venció: el panel espera milisegundos que
+// faltan, y un número negativo ahí no significa nada para él.
+func (e Evento) faltaEnMs(ahora time.Time) int64 {
+	if e.ProximaEn.IsZero() {
+		return 0
+	}
+	if ms := e.ProximaEn.Sub(ahora).Milliseconds(); ms > 0 {
+		return ms
+	}
+	return 0
 }
 
 type cliente struct {
@@ -218,7 +249,15 @@ func (h *Hub) Run(ctx context.Context) {
 }
 
 // difundirA reparte el evento sin bloquear en ningún cliente.
+//
+// Acá se completa ProximaEnMs, y no en quien publica: este es el único punto
+// por el que un evento sale hacia un cliente, así que calcularlo aquí garantiza
+// que TODOS los destinatarios —el que acaba de suscribirse igual que los que ya
+// estaban— reciban un plazo relativo al instante en que se les mandó, aunque el
+// evento venga de una rotación de hace varios segundos. `e` es una copia, así
+// que escribirle no toca el `ultimo` que conserva Run.
 func difundirA(clientes map[*cliente]struct{}, e Evento) {
+	e.ProximaEnMs = e.faltaEnMs(time.Now())
 	for c := range clientes {
 		enviar(c, e)
 	}

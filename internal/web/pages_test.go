@@ -363,6 +363,14 @@ func TestPlayerExigeSesionYMuestraAlUsuario(t *testing.T) {
 	if !strings.Contains(cuerpo, "/live/stream.m3u8") {
 		t.Error("la página no apunta al playlist")
 	}
+	// Un 200 sin directivas de caché es cacheable HEURÍSTICAMENTE por un
+	// intermediario, y esta respuesta lleva el nombre del usuario adentro. El
+	// razonamiento está en render(); sin esta aserción, borrar la cabecera no
+	// rompería nada visible hasta que un proxy le mostrara a alguien el saludo
+	// de otro.
+	if cc := w.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("Cache-Control = %q, quiero no-store: la página autenticada no puede cachearse", cc)
+	}
 }
 
 func TestRegistroSinCamposNoEs500(t *testing.T) {

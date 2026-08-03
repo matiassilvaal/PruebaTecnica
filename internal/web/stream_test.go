@@ -120,7 +120,18 @@ func TestSegmentoSirveElArchivo(t *testing.T) {
 	// toda la ventana ya vista.
 	cc := w.Header().Get("Cache-Control")
 	if !strings.Contains(cc, "immutable") || !strings.Contains(cc, "max-age=31536000") {
-		t.Errorf("Cache-Control = %q, quiero public, max-age=31536000, immutable", cc)
+		t.Errorf("Cache-Control = %q, quiero private, max-age=31536000, immutable", cc)
+	}
+	// Y `private`, nunca `public`: la ruta va detrás de RequireAPI, y una
+	// cookie de sesión no impide por sí sola que una caché compartida guarde la
+	// respuesta. Con `public` cualquier proxy quedaría autorizado a servir un
+	// segmento autenticado durante un año a quien no tiene cuenta, que es
+	// exactamente lo que el requisito 4 prohíbe.
+	if !strings.Contains(cc, "private") {
+		t.Errorf("Cache-Control = %q, le falta private", cc)
+	}
+	if strings.Contains(cc, "public") {
+		t.Errorf("Cache-Control = %q: no puede ser public detrás de una sesión", cc)
 	}
 }
 

@@ -322,6 +322,87 @@ func TestHubEntregaElUltimoEstadoAlConectar(t *testing.T) {
 	}
 }
 
+func TestElReenvioNoEntregaUnaCuentaRegresivaVieja(t *testing.T) {
+	// El bug que este test cierra sólo se ve en el navegador, que es donde no
+	// hay tests: el hub redifunde el último estado en cada alta y cada baja, así
+	// que con la cuenta regresiva calculada al publicar, abrir una segunda
+	// pestaña le mandaba a TODOS los espectadores el plazo del momento de la
+	// rotación. El contador saltaba hacia atrás —de "3.0 s" a "10.0 s"— y la
+	// barra volvía a cero, justo en el escenario que el enunciado usa de demo.
+	// Y el que recién se suscribía arrancaba con hasta una rotación de más.
+	ctx, cancelar := context.WithCancel(context.Background())
+	defer cancelar()
+	h := NewHub()
+	go h.Run(ctx)
+
+	primero, salirPrimero := h.Suscribir()
+	defer salirPrimero()
+	drenar(primero)
+
+	h.Publicar(Evento{Secuencia: 3, ProximaEn: time.Now().Add(500 * time.Millisecond)})
+
+	var alPublicar int64
+	select {
+	case e := <-primero:
+		alPublicar = e.ProximaEnMs
+	case <-time.After(time.Second):
+		t.Fatal("el primer cliente no recibió el evento publicado")
+	}
+	if alPublicar <= 0 {
+		t.Fatalf("ProximaEnMs = %d al publicar, quiero un plazo positivo", alPublicar)
+	}
+
+	// Suficiente para que un valor precomputado se note viejo y muy por debajo
+	// del segundo que ningún test puede tardar.
+	time.Sleep(100 * time.Millisecond)
+
+	// El alta del segundo cliente es lo que dispara el reenvío del último
+	// estado a todo el conjunto.
+	segundo, salirSegundo := h.Suscribir()
+	defer salirSegundo()
+
+	select {
+	case e := <-segundo:
+		if e.ProximaEnMs >= alPublicar {
+			t.Errorf("el que se suscribe recibe ProximaEnMs = %d, quiero menos de %d: le llega el plazo de la rotación y no el que queda", e.ProximaEnMs, alPublicar)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("el cliente nuevo no recibió el estado vigente")
+	}
+
+	select {
+	case e := <-primero:
+		if e.ProximaEnMs >= alPublicar {
+			t.Errorf("el que ya estaba conectado recibe ProximaEnMs = %d, quiero menos de %d: su contador saltaría hacia atrás", e.ProximaEnMs, alPublicar)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("el cliente ya conectado no recibió el reenvío del alta")
+	}
+}
+
+func TestSinRotacionLaCuentaRegresivaEsCero(t *testing.T) {
+	// El estado inicial —antes de la primera rotación— no tiene instante al que
+	// apuntar. Derivar los milisegundos de un time.Time cero daría un número
+	// enorme y negativo, y el panel lo leería como una rotación vencida hace
+	// siglos en vez de como "todavía no hay referencia".
+	ctx, cancelar := context.WithCancel(context.Background())
+	defer cancelar()
+	h := NewHub()
+	go h.Run(ctx)
+
+	ch, salir := h.Suscribir()
+	defer salir()
+
+	select {
+	case e := <-ch:
+		if e.ProximaEnMs != 0 {
+			t.Errorf("ProximaEnMs = %d sin rotación previa, quiero 0", e.ProximaEnMs)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("el cliente no recibió el evento de su alta")
+	}
+}
+
 func drenar(ch <-chan Evento) {
 	for {
 		select {

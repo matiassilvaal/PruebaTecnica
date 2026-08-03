@@ -7,6 +7,7 @@ package web
 import (
 	"context"
 	"embed"
+	"io"
 	"log"
 	"net/http"
 
@@ -133,6 +134,19 @@ func (r *respuestaObservada) Flush() {
 	if f, ok := r.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// ReadFrom reexpone el io.ReaderFrom del writer envuelto, por la misma razón
+// que Flush y con la misma consecuencia invisible en los tests del handler
+// aislado: http.ServeContent pregunta por esta interfaz para entregar el .ts
+// con sendfile, sin copiarlo por el espacio de usuario. Al embeber la
+// INTERFAZ http.ResponseWriter sólo se promueven sus tres métodos, así que sin
+// esto cada segmento pasaría por un buffer de 32 KB en RAM que no hace falta.
+func (r *respuestaObservada) ReadFrom(src io.Reader) (int64, error) {
+	if rf, ok := r.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(src)
+	}
+	return io.Copy(r.ResponseWriter, src)
 }
 
 // registrar deja una línea por petición.

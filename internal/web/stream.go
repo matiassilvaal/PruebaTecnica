@@ -4,7 +4,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"time"
 
 	"zapping-live/internal/hls"
 	"zapping-live/internal/viewers"
@@ -67,10 +66,18 @@ func (s *manejadorStream) segmento(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// El contenido de un .ts nunca cambia, así que se cachea un año. Es lo que
+	// El contenido de un .ts nunca cambia, así que se cachea un año: es lo que
 	// hace que revisitar la ventana no vuelva a costarle disco al servidor.
+	//
+	// `private` y no `public` porque esta ruta va detrás de RequireAPI. La
+	// cookie de sesión NO inhibe por sí sola el almacenamiento compartido —eso
+	// sólo lo hace un Authorization, RFC 9111 §3.5—, así que `public` sería una
+	// autorización explícita para que cualquier caché intermedia guarde un
+	// segmento autenticado y se lo sirva durante un año a quien no tiene
+	// cuenta: justo lo que el requisito 4 prohíbe. El ahorro no se pierde,
+	// porque viene de la caché del navegador, que cachea igual con `private`.
 	w.Header().Set("Content-Type", "video/mp2t")
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 
 	// ServeContent copia por bloques desde el *os.File y resuelve los range
 	// requests. Un segmento de 13 MB cuesta del orden de KB de RAM, no 13 MB:
@@ -99,9 +106,13 @@ func HookDeRotacion(h *viewers.Hub) func(*hls.Snapshot) {
 		}
 
 		h.Publicar(viewers.Evento{
-			Secuencia:      s.Seq,
-			Ventana:        ventana,
-			ProximaEnMs:    time.Until(s.NextAt).Milliseconds(),
+			Secuencia: s.Seq,
+			Ventana:   ventana,
+			// Se pasa el INSTANTE de la rotación, no los milisegundos que
+			// faltan: el hub reenvía este evento en cada alta y cada baja, y un
+			// plazo calculado acá llegaría envejecido a todos ellos. Los
+			// milisegundos los deriva el hub al enviar.
+			ProximaEn:      s.NextAt,
 			Discontinuidad: s.HasDisc,
 		})
 	}

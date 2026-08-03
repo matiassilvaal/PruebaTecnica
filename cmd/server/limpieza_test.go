@@ -156,6 +156,13 @@ func TestElServidorNoLlevaWriteTimeout(t *testing.T) {
 	if srv.ReadHeaderTimeout == 0 {
 		t.Error("ReadHeaderTimeout = 0: hace falta contra slowloris")
 	}
+	// IdleTimeout va junto en la misma aserción a propósito: es el que sí
+	// corresponde poner —sólo corre ENTRE peticiones, nunca durante un SSE en
+	// curso— y tenerlo acá deja claro que la ausencia de WriteTimeout es una
+	// decisión y no un olvido, para que nadie los "arregle" a los dos juntos.
+	if srv.IdleTimeout == 0 {
+		t.Error("IdleTimeout = 0: las conexiones keep-alive ociosas quedarían retenidas sin límite")
+	}
 	if srv.Addr != ":8080" {
 		t.Errorf("Addr = %q, quiero \":8080\"", srv.Addr)
 	}

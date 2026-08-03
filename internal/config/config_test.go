@@ -1,12 +1,36 @@
 package config
 
 import (
+	"os"
 	"testing"
 	"time"
 )
 
+// sinEntorno deja el proceso sin ninguna de las variables que lee Cargar, y las
+// restaura al terminar el test.
+//
+// Sin esto, el resultado lo decide el shell que corre los tests: la imagen del
+// contenedor define PORT y DB_PATH, así que una etapa de test dentro del build
+// haría fallar los defaults y el síntoma parecería un bug de config y no una
+// contaminación del entorno.
+//
+// El par Setenv+Unsetenv no es redundante: Unsetenv es lo que produce la
+// ausencia real, y t.Setenv es lo que registra la restauración al terminar (y,
+// de paso, prohíbe t.Parallel en este test, que es la otra vía de contaminarlo).
+func sinEntorno(t *testing.T) {
+	t.Helper()
+	for _, v := range []string{"PORT", "DB_PATH", "SEGMENTS_DIR", "SESSION_TTL", "SECURE_COOKIES", "WINDOW_SIZE"} {
+		t.Setenv(v, "")
+		if err := os.Unsetenv(v); err != nil {
+			t.Fatalf("borrando %s del entorno: %v", v, err)
+		}
+	}
+}
+
 func TestCargarDefaults(t *testing.T) {
 	// Sin ninguna variable puesta, el servicio debe poder levantar igual.
+	sinEntorno(t)
+
 	c, err := Cargar()
 	if err != nil {
 		t.Fatalf("Cargar sin entorno: %v", err)
