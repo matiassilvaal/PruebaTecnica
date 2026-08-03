@@ -126,7 +126,13 @@ cierra el navegador.
 ```
 
 Se publica cuando cambia el número de espectadores y en cada rotación del motor. El motor
-notifica al hub por canal; `hls` sigue sin conocer ni HTTP ni al hub.
+notifica al hub llamando a un **hook síncrono** (`onRotate`, registrado vía
+`hls.WithRotationHook`), no publicando en un canal propio de `hls` — ese paquete no expone
+ningún canal ni conoce al hub. El hook corre en la propia goroutine de rotación del motor,
+así que es el hub quien tiene que reenviar el snapshot a su canal `publish` interno **sin
+bloquear** (ver el `select`/`default` de arriba); si el hook del hub bloqueara, bloquearía
+también el avance del stream. `hls` sigue sin conocer ni HTTP ni al hub: sólo conoce la firma
+`func(*Snapshot)` que le pasan.
 
 ## El player — `templates/player.html` + `static/app.js`
 

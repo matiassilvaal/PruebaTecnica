@@ -165,11 +165,11 @@ cercano, según RFC 8216 — se mantiene en 10 aunque haya un segmento de 4,57s.
 
 ```go
 type Engine struct {
-    pool  *Pool
-    now   func() time.Time      // inyectable: hace los tests deterministas
-    start time.Time
-    cur   atomic.Pointer[Snapshot]
-    subs  chan<- Snapshot       // notifica al hub SSE cada rotación
+    pool       *Pool
+    now        func() time.Time      // inyectable: hace los tests deterministas
+    start      time.Time
+    cur        atomic.Pointer[Snapshot]
+    onRotate   func(*Snapshot)       // hook síncrono, notifica al hub SSE cada rotación
 }
 
 func New(pool *Pool, opts ...Option) *Engine
@@ -177,15 +177,41 @@ func (e *Engine) Run(ctx context.Context)   // bloquea hasta ctx.Done()
 func (e *Engine) Current() *Snapshot        // atomic.Load, wait-free
 ```
 
+El mecanismo de notificación **no es un canal**: es un callback síncrono, `onRotate
+func(*Snapshot)`, registrado con la opción `WithRotationHook`. La diferencia importa —
+no es un simple rename, cambia quién ejecuta el código del consumidor. `refresh()` (la
+función interna que calcula el snapshot y lo publica) llama a `onRotate` directamente,
+en la misma goroutine que hace `Run`:
+
+```go
+func (e *Engine) refresh() time.Duration {
+    snap, until := e.snapshotNow()
+    e.cur.Store(snap)
+    if e.onRotate != nil {
+        e.onRotate(snap)   // síncrono: corre en la goroutine de Run
+    }
+    return until
+}
+```
+
+**El hook no debe bloquear ni entrar en pánico.** Como corre síncronamente en la goroutine
+de rotación, un hook que bloquea detiene el avance del stream, y un pánico se propaga hacia
+arriba y tumba esa goroutine. Es responsabilidad de quien lo registra (el hub SSE, en el
+bloque 04) reenviar el snapshot a su propio canal interno sin bloquear — nunca hacer trabajo
+potencialmente lento dentro del hook mismo.
+
+`New` publica el snapshot inicial **sin** disparar el hook: sólo llama a `cur.Store`. El
+hook empieza a dispararse recién cuando arranca `Run`. Esto evita dos problemas: que `New`
+se cuelgue si el consumidor bloquea antes de que exista un lector (el hub SSE arranca su
+goroutine con `go hub.Run(ctx)` después de construir el Engine), y que se publiquen dos
+eventos para la misma secuencia inicial (uno desde `New`, otro desde la primera vuelta de
+`Run`).
+
 El bucle:
 
 ```go
 for {
-    elapsed    := e.now().Sub(e.start)
-    seq, until := e.pool.Locate(elapsed)
-
-    e.cur.Store(e.buildSnapshot(seq, e.now().Add(until)))
-    e.notify()
+    until := e.refresh()   // calcula, publica y dispara onRotate
 
     select {
     case <-time.After(until):   // duerme exactamente hasta la próxima rotación
@@ -197,6 +223,12 @@ for {
 
 `until` sale siempre de la tabla acumulada contra el reloj absoluto, así que cada despertar
 se re-ancla al `start`: los atrasos no se acumulan.
+
+Importante: el reloj inyectable (`now`) sólo gobierna el cálculo dentro de `refresh()`. El
+`select` de arriba duerme sobre el reloj real del sistema (`time.NewTimer`), no sobre `now`.
+Un reloj falso sirve para probar `refresh()` sin esperar, pero no sirve para conducir `Run`:
+con un reloj congelado, `Run` seguiría despertando cada `until` de tiempo real y recalculando
+el mismo `seq` indefinidamente, sin ningún error visible.
 
 ## Servir los segmentos
 

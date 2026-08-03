@@ -91,6 +91,26 @@ el decodificador debe reinicializarse. Sin la etiqueta habría un glitch o un co
 Es el mismo mecanismo estándar con el que la industria inserta publicidad en vivo, y hls.js
 lo atraviesa sin detenerse.
 
+### El manifiesto y los segmentos son confianza de operador, no input de usuario
+
+**Contexto:** `Pool.Resolve` traduce un nombre de segmento a una ruta en disco mediante una
+lista blanca — sólo acepta nombres que ya están en el índice construido al parsear el
+manifiesto — y no sanea la entrada más allá de eso. Un manifiesto adversarial que declarara
+un segmento llamado `../secreto.txt` sí escaparía del directorio de segmentos si ese nombre
+llegara a `Resolve`.
+
+**Por qué no es un hueco:** `segment.m3u8` y los `.ts` se hornean **dentro de la imagen
+Docker en build time** (ver `docs/05-docker-y-entrega.md`). No existe ninguna ruta de subida
+en el diseño — ni un endpoint, ni un volumen editable por el usuario final — así que el
+manifiesto es configuración fijada por quien arma la imagen (el operador), no un input que
+llegue desde la red o desde una cuenta de usuario. El único actor que podría escribir un
+`../secreto.txt` en el manifiesto es quien ya tiene control sobre el build de la imagen, y en
+ese punto ya tiene control total del contenedor de cualquier forma.
+
+**Decisión:** `Resolve` no necesita sanear rutas (normalizar `..`, rechazar separadores,
+etc.) más allá de la lista blanca contra el índice del pool. Añadir ese saneamiento sería
+defensa contra un actor que el modelo de amenaza de este proyecto no contempla.
+
 ### Los `.ts` se sirven con `http.ServeContent`
 
 Copia por bloques desde un `*os.File` en vez de cargar el archivo en memoria, y habilita
