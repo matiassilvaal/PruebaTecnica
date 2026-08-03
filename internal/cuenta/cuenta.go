@@ -1,5 +1,5 @@
-// Package user modela a los usuarios registrados y persiste su alta.
-package user
+// Package cuenta modela a los usuarios registrados y persiste su alta.
+package cuenta
 
 import (
 	"fmt"
@@ -16,10 +16,10 @@ const (
 	MaxPasswordBytes = 72  // en bytes: es el límite técnico de bcrypt
 )
 
-// User es un usuario registrado. NO tiene campo de contraseña: el hash viaja
-// aparte, sólo hasta donde hace falta verificarlo, así es imposible filtrarlo
-// al renderizar un template o serializar a JSON.
-type User struct {
+// Usuario es un usuario registrado. NO tiene campo de contraseña: el hash
+// viaja aparte, sólo hasta donde hace falta verificarlo, así es imposible
+// filtrarlo al renderizar un template o serializar a JSON.
+type Usuario struct {
 	ID        int64
 	Name      string
 	Email     string
