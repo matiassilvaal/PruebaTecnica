@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -134,5 +135,128 @@ func TestForeignKeyCascade(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("quedaron %d sesiones tras borrar el usuario, quiero 0 (CASCADE)", n)
+	}
+}
+
+// TestSchemaVersionInicializacionConcurrente reproduce, de forma
+// determinista, la carrera que dos conexiones distintas pueden pisar al
+// arrancar el contenedor dos veces sobre el mismo archivo: ambas ven la
+// tabla vacía antes de que cualquiera inserte. Usa dos *sql.Conn dedicadas
+// (en vez de goroutines) para forzar ese entrelazado sin depender del
+// scheduler.
+//
+// Con la restricción CHECK(id=1) de crearSchemaVersion, el segundo
+// INSERT OR IGNORE no hace nada y la tabla queda con 1 fila. Sin esa
+// restricción (la tabla vieja sólo tenía `version INTEGER NOT NULL`, sin
+// clave primaria), las dos inserciones tendrían éxito y quedarían 2 filas:
+// este test falla si esa restricción desaparece.
+func TestSchemaVersionInicializacionConcurrente(t *testing.T) {
+	db := abrirTemporal(t)
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx, crearSchemaVersion); err != nil {
+		t.Fatalf("creando schema_version: %v", err)
+	}
+
+	conn1, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("abriendo conn1: %v", err)
+	}
+	defer conn1.Close()
+	conn2, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("abriendo conn2: %v", err)
+	}
+	defer conn2.Close()
+
+	// Ambas conexiones consultan antes de que cualquiera inserte: las dos
+	// ven la tabla vacía, como en la reproducción del revisor.
+	for i, c := range []*sql.Conn{conn1, conn2} {
+		var v int
+		err := c.QueryRowContext(ctx, leerSchemaVersion).Scan(&v)
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("conexión %d: quería sql.ErrNoRows antes de inicializar, obtuve %v", i+1, err)
+		}
+	}
+
+	// Ambas intentan inicializar, en el orden en que lo haría Migrate.
+	if _, err := conn1.ExecContext(ctx, inicializarSchemaVersion); err != nil {
+		t.Fatalf("inicializando desde conn1: %v", err)
+	}
+	if _, err := conn2.ExecContext(ctx, inicializarSchemaVersion); err != nil {
+		t.Fatalf("inicializando desde conn2: %v", err)
+	}
+
+	var n int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM schema_version").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("schema_version quedó con %d filas tras la carrera, quiero 1", n)
+	}
+}
+
+// TestMigrateSchemaVersionUnaSolaFila confirma que, tras varias corridas de
+// Migrate, schema_version sigue teniendo exactamente una fila con la
+// versión correcta: el UPDATE sin WHERE del bug original mantenía las filas
+// sincronizadas (sin pérdida de datos), pero dejaba basura silenciosa.
+func TestMigrateSchemaVersionUnaSolaFila(t *testing.T) {
+	db := abrirTemporal(t)
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if err := Migrate(ctx, db); err != nil {
+			t.Fatalf("Migrate #%d: %v", i+1, err)
+		}
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM schema_version").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("schema_version tiene %d filas, quiero 1", n)
+	}
+	var v int
+	if err := db.QueryRowContext(ctx, leerSchemaVersion).Scan(&v); err != nil {
+		t.Fatalf("leyendo version: %v", err)
+	}
+	if v != len(migraciones) {
+		t.Errorf("version = %d, quiero %d", v, len(migraciones))
+	}
+}
+
+// TestSchemaVersionFormaNueva verifica que una base recién creada adopte la
+// forma nueva de schema_version (columna id con CHECK). CREATE TABLE IF NOT
+// EXISTS no migraría una base ya creada con la forma vieja, pero no hay
+// bases en producción todavía, así que no hace falta resolverlo aquí.
+func TestSchemaVersionFormaNueva(t *testing.T) {
+	db := abrirTemporal(t)
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(schema_version)")
+	if err != nil {
+		t.Fatalf("PRAGMA table_info: %v", err)
+	}
+	defer rows.Close()
+
+	var tieneID bool
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("leyendo columna: %v", err)
+		}
+		if name == "id" && pk == 1 {
+			tieneID = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !tieneID {
+		t.Error("schema_version no tiene una columna id como clave primaria")
 	}
 }
