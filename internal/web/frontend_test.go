@@ -73,25 +73,55 @@ func TestNingunVidrioSeSuperponeAlVideo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("leyendo app.css: %v", err)
 	}
-	css := string(datos)
 
-	// Selectores que están sobre el <video> o lo contienen.
-	prohibidos := []string{"video", ".marco", ".superpuesto", ".sobre-video"}
+	// Los comentarios se eliminan ANTES de trocear en reglas. Sin esto, el
+	// comentario que precede a una regla queda pegado a su selector y el nombre
+	// deja de coincidir — con lo cual este test pasaba aunque .marco llevara
+	// backdrop-filter, que es exactamente lo que viene a impedir.
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(string(datos), " ")
 
+	// Elementos que están sobre el <video> o lo contienen.
+	prohibidos := map[string]bool{
+		"video": true, ".marco": true, ".superpuesto": true, ".sobre-video": true,
+	}
+
+	// Se extraen los selectores simples de cada regla en vez de comparar la
+	// cadena entera: así ".marco > .x", ".marco:hover", ".marco.oscuro" y
+	// "a, .marco" se detectan igual, y ".no-marco" no da un falso positivo.
+	simples := regexp.MustCompile(`[.#]?[a-zA-Z_-][\w-]*`)
 	bloque := regexp.MustCompile(`(?s)([^{}]+)\{([^{}]*)\}`)
+
 	for _, m := range bloque.FindAllStringSubmatch(css, -1) {
 		selector, cuerpo := strings.TrimSpace(m[1]), m[2]
 		if !strings.Contains(cuerpo, "backdrop-filter") {
 			continue
 		}
-		for _, malo := range prohibidos {
-			for _, parte := range strings.Split(selector, ",") {
-				parte = strings.TrimSpace(parte)
-				if parte == malo || strings.HasPrefix(parte, malo+" ") ||
-					strings.HasPrefix(parte, malo+":") || strings.HasSuffix(parte, " "+malo) {
-					t.Errorf("el selector %q usa backdrop-filter sobre el video: está prohibido", selector)
-				}
+		for _, token := range simples.FindAllString(selector, -1) {
+			if prohibidos[token] {
+				t.Errorf("el selector %q usa backdrop-filter sobre el video (por %q): está prohibido", selector, token)
 			}
+		}
+	}
+}
+
+func TestElJsNoHardcodeaLasRutasDelStream(t *testing.T) {
+	// Las URL del stream viven en el HTML que renderiza el servidor, que es
+	// quien conoce su árbol de rutas. Si alguien las reescribe acá habría dos
+	// fuentes de verdad, y ninguna prueba lo notaría: los tests de Go no
+	// ejecutan JavaScript, así que esta comprobación textual es lo único que
+	// hay entre esa regresión y el navegador.
+	datos, err := archivosEstaticos.ReadFile("static/player.js")
+	if err != nil {
+		t.Fatalf("leyendo player.js: %v", err)
+	}
+	js := string(datos)
+
+	if strings.Contains(js, "/live/") {
+		t.Error("player.js escribe una ruta de /live/ a mano: debe leerlas de data-playlist y data-eventos")
+	}
+	for _, lectura := range []string{"dataset.playlist", "dataset.eventos"} {
+		if !strings.Contains(js, lectura) {
+			t.Errorf("player.js no lee %s del HTML", lectura)
 		}
 	}
 }
