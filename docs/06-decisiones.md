@@ -257,6 +257,35 @@ de tests corre en milisegundos y es determinista.
 
 ---
 
+### "Volver al vivo" se mide contra hls.js, no contra el borde del rango
+
+**El defecto que lo motivó:** el botón aparecía siempre, desde el primer segundo y para todo
+el mundo. Dos decisiones correctas por separado se contradecían.
+
+`liveSyncDurationCount: 3` posiciona al player **a propósito** al comienzo de la ventana de
+tres segmentos, que es donde hay más colchón antes de quedarse sin datos. Con una ventana del
+mínimo que permite la spec, ese margen es todo lo que hay. Pero eso deja la reproducción
+20-30 s por detrás de `seekable.end()`, y el botón comparaba justamente contra ese borde con
+un umbral de 12 s. Resultado: en el instante en que la reproducción arrancaba **exactamente
+donde debía**, la resta daba 20-30 y el botón se encendía. Y no se apagaba nunca.
+
+**Decisión:** la referencia es `hls.liveSyncPosition` —dónde hls.js considera que está el
+vivo—, no el final del rango buscable. Es la única contra la que "atrasado" significa algo.
+El salto del botón va también a esa posición y no al borde absoluto, que puede no estar
+descargado y del que hls.js devolvería la reproducción hacia atrás igual.
+
+Mientras hls.js no publique esa posición —los primeros instantes— el botón queda oculto, en
+vez de caer al borde, que es la referencia equivocada.
+
+Safari reproduce HLS de forma nativa y no expone un equivalente, pero tampoco se aleja del
+borde: ahí sí se usa el final del rango.
+
+**Nota sobre qué significa "en vivo" acá:** con una ventana de tres segmentos, estar 20-30 s
+por detrás del borde absoluto **es** la posición en vivo. La spec de HLS recomienda arrancar
+a tres duraciones objetivo del final justamente por eso, y con 30 s de ventana no hay forma
+de estar más cerca sin quedarse sin buffer a la primera. La latencia es una consecuencia del
+tamaño de ventana que fija el enunciado, no una elección del player.
+
 ## Limitaciones conocidas
 
 Vale la pena declararlas: reconocerlas da más confianza que omitirlas.

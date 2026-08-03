@@ -88,16 +88,52 @@
     mostrarFallo('Este navegador no puede reproducir HLS.');
   }
 
-  // "Volver al vivo": si el usuario pausa, queda atrás respecto del borde en
-  // vivo. Se le ofrece el salto en vez de dejarlo mirando el pasado sin saberlo.
-  video.addEventListener('timeupdate', function () {
-    if (!video.seekable || video.seekable.length === 0) return;
-    var borde = video.seekable.end(video.seekable.length - 1);
-    volver.hidden = (borde - video.currentTime) < 12;
-  });
-  volver.addEventListener('click', function () {
+  // "Volver al vivo": si el usuario pausa o retrocede, queda atrás. Se le ofrece
+  // el salto en vez de dejarlo mirando el pasado sin saberlo.
+  //
+  // La referencia NO es el final del rango buscable. Con una ventana de tres
+  // segmentos, hls.js se posiciona a propósito al COMIENZO de esa ventana —que
+  // es donde hay más colchón— y eso son 20-30 s por detrás del borde. Medir
+  // contra el borde marcaba como atrasado a quien acababa de entrar y estaba
+  // exactamente donde debía: el botón aparecía siempre, desde el primer segundo,
+  // para todo el mundo, y no se iba nunca.
+  //
+  // hls.liveSyncPosition es dónde hls.js considera que está el vivo, así que es
+  // la única referencia con la que "atrasado" significa algo. Safari reproduce
+  // HLS de forma nativa y no expone un equivalente, pero tampoco se aleja del
+  // borde, así que ahí el final del rango sí sirve.
+  var MARGEN_ATRASO = 10; // segundos: un segmento entero por detrás del vivo
+
+  function posicionEnVivo() {
+    // Con hls.js al mando, su posición es la ÚNICA referencia válida. Si todavía
+    // no la publicó —los primeros instantes, antes de cargar el detalle del
+    // nivel— se devuelve null y el botón queda oculto. Caer al borde del rango
+    // mientras tanto sería volver justo a la referencia equivocada, y el botón
+    // parpadearía al arrancar.
+    if (hls) {
+      return hls.liveSyncPosition != null ? hls.liveSyncPosition : null;
+    }
+    // Sin hls.js es Safari con HLS nativo, que sí se mantiene cerca del borde.
     if (video.seekable && video.seekable.length > 0) {
-      video.currentTime = video.seekable.end(video.seekable.length - 1);
+      return video.seekable.end(video.seekable.length - 1);
+    }
+    return null;
+  }
+
+  // timeupdate sólo dispara mientras se reproduce, así que con el video en pausa
+  // el botón no aparece hasta que se reanuda — que es justo cuando hace falta.
+  video.addEventListener('timeupdate', function () {
+    var vivo = posicionEnVivo();
+    volver.hidden = vivo === null || (vivo - video.currentTime) < MARGEN_ATRASO;
+  });
+
+  volver.addEventListener('click', function () {
+    var vivo = posicionEnVivo();
+    // Se salta a la posición de sincronía y no al borde absoluto: ese borde
+    // puede no estar descargado todavía, y hls.js devolvería la reproducción
+    // hacia atrás en cuanto reanudara.
+    if (vivo !== null) {
+      video.currentTime = vivo;
     }
     video.play();
     volver.hidden = true;
