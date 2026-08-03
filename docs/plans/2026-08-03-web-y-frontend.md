@@ -1063,6 +1063,11 @@ type banco struct {
 	Sesiones *auth.Sessions
 	Usuarios *cuenta.Store
 
+	// Cancelar apaga el hub. Lo necesita el test que comprueba qué pasa con un
+	// espectador todavía conectado cuando el proceso se apaga — el camino real
+	// de `docker stop`.
+	Cancelar context.CancelFunc
+
 	// Registro acumula lo que el middleware de logging escriba durante el test.
 	Registro *bufferDeLog
 }
@@ -1102,6 +1107,7 @@ func entorno(t *testing.T) *banco {
 	b := &banco{
 		Motor: motor, Pool: pool, Hub: hub,
 		Guard: guard, Sesiones: sesiones, Usuarios: usuarios,
+		Cancelar: cancelar,
 	}
 	// El log va a un buffer y no a stderr: el middleware emite una linea por
 	// peticion, y con decenas de tests eso entierra la salida de `go test` en
@@ -2943,6 +2949,21 @@ import (
 	"zapping-live/internal/viewers"
 )
 
+// servidorDePrueba levanta el servidor y programa su cierre con t.Cleanup, NO
+// con defer.
+//
+// El orden importa: los defer del test corren ANTES que los t.Cleanup, así que
+// un `defer srv.Close()` cerraría el servidor mientras el cuerpo SSE sigue
+// abierto —su cierre lo registra abrirSSE, más tarde— y Close() se quedaría
+// cinco segundos esperando esa conexión. Con Cleanup el orden se invierte:
+// primero el cuerpo, después el servidor, y al final el hub.
+func servidorDePrueba(t *testing.T, b *banco) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(b.Handler)
+	t.Cleanup(func() { srv.Close() })
+	return srv
+}
+
 // abrirSSE conecta al endpoint y devuelve un lector de líneas.
 func abrirSSE(t *testing.T, srv *httptest.Server, galleta *http.Cookie) (*http.Response, *bufio.Reader) {
 	t.Helper()
@@ -2992,8 +3013,7 @@ func leerEvento(t *testing.T, br *bufio.Reader) viewers.Evento {
 
 func TestSSECabecerasYPrimerEvento(t *testing.T) {
 	b := entorno(t)
-	srv := httptest.NewServer(b.Handler)
-	defer srv.Close()
+	srv := servidorDePrueba(t, b)
 	_, galleta := usuarioConSesion(t, b)
 
 	resp, br := abrirSSE(t, srv, galleta)
@@ -3018,8 +3038,7 @@ func TestSSECabecerasYPrimerEvento(t *testing.T) {
 
 func TestSSERecibeLasRotaciones(t *testing.T) {
 	b := entorno(t)
-	srv := httptest.NewServer(b.Handler)
-	defer srv.Close()
+	srv := servidorDePrueba(t, b)
 	_, galleta := usuarioConSesion(t, b)
 
 	_, br := abrirSSE(t, srv, galleta)
@@ -3052,8 +3071,7 @@ func TestSSECuentaDosPestanas(t *testing.T) {
 	// El criterio de aceptación textual del bloque: abrir dos pestañas sube el
 	// contador a 2, cerrar una lo baja a 1.
 	b := entorno(t)
-	srv := httptest.NewServer(b.Handler)
-	defer srv.Close()
+	srv := servidorDePrueba(t, b)
 	_, galleta := usuarioConSesion(t, b)
 
 	_, br1 := abrirSSE(t, srv, galleta)
@@ -3080,8 +3098,7 @@ func TestSSEDesconexionDesRegistra(t *testing.T) {
 	// r.Context().Done() es lo que garantiza que cerrar la pestaña no deje una
 	// goroutine colgada esperando eventos para nadie.
 	b := entorno(t)
-	srv := httptest.NewServer(b.Handler)
-	defer srv.Close()
+	srv := servidorDePrueba(t, b)
 	_, galleta := usuarioConSesion(t, b)
 
 	resp, br := abrirSSE(t, srv, galleta)
@@ -3104,8 +3121,7 @@ func TestSSEDesconexionDesRegistra(t *testing.T) {
 
 func TestSSESinSesionEs401(t *testing.T) {
 	b := entorno(t)
-	srv := httptest.NewServer(b.Handler)
-	defer srv.Close()
+	srv := servidorDePrueba(t, b)
 
 	resp, err := srv.Client().Get(srv.URL + "/live/events")
 	if err != nil {
@@ -3118,18 +3134,87 @@ func TestSSESinSesionEs401(t *testing.T) {
 	}
 }
 
+func TestSSEElMensajeTerminaEnLineaEnBlanco(t *testing.T) {
+	// EventSource sólo DESPACHA el mensaje al ver la línea en blanco. Con un
+	// solo 
+ el navegador acumula datos y no entrega nada: el panel se
+	// quedaría vacío para siempre con la suite entera en verde y sin una línea
+	// de log. Es la diferencia entre "los tests pasan" y "funciona en el
+	// navegador", y no la cubre ninguna otra aserción: leerEvento lee por
+	// líneas y un solo 
+ también termina la línea del data:.
+	b := entorno(t)
+	srv := servidorDePrueba(t, b)
+	_, galleta := usuarioConSesion(t, b)
+
+	_, br := abrirSSE(t, srv, galleta)
+
+	datos, err := br.ReadString('
+')
+	if err != nil {
+		t.Fatalf("leyendo el evento: %v", err)
+	}
+	if !strings.HasPrefix(datos, "data: ") {
+		t.Fatalf("primera línea = %q, quiero un data:", datos)
+	}
+	cierre, err := br.ReadString('
+')
+	if err != nil {
+		t.Fatalf("leyendo el cierre del mensaje: %v", err)
+	}
+	if cierre != "
+" {
+		t.Errorf("tras el data: llegó %q, quiero una línea en blanco", cierre)
+	}
+}
+
+func TestSSEElApagadoDelHubCierraLaConexion(t *testing.T) {
+	// El camino real de `docker stop`: se cancela el contexto raíz, el hub
+	// cierra los canales de sus clientes y los handlers tienen que volver
+	// solos. De eso depende que http.Server.Shutdown termine rápido en vez de
+	// agotar su plazo, y el servidor no lleva WriteTimeout que lo rescate.
+	//
+	// Sin la rama `!abierto`, un canal cerrado se leería como un evento normal
+	// una y otra vez: el handler entraría en un bucle cerrado escribiendo
+	// eventos vacíos a toda velocidad.
+	b := entorno(t)
+	srv := servidorDePrueba(t, b)
+	_, galleta := usuarioConSesion(t, b)
+
+	_, br := abrirSSE(t, srv, galleta)
+	leerEvento(t, br) // el espectador ya está suscrito
+
+	b.Cancelar() // apaga el hub con el espectador todavía conectado
+
+	for {
+		linea, err := br.ReadString('
+')
+		if err != nil {
+			return // EOF: el handler cerró ordenadamente, que es lo que se busca
+		}
+		if strings.HasPrefix(linea, "data: ") {
+			t.Fatalf("el hub apagado sigue emitiendo eventos: %q", linea)
+		}
+	}
+}
+
 func TestSSENoFiltraDatosDelUsuario(t *testing.T) {
 	// El evento se difunde a TODOS los espectadores. Si alguna vez alguien
 	// agregara el nombre o el email al Evento, todos verían los de todos.
 	b := entorno(t)
-	srv := httptest.NewServer(b.Handler)
-	defer srv.Close()
+	srv := servidorDePrueba(t, b)
 	u, galleta := usuarioConSesion(t, b)
 
 	_, br := abrirSSE(t, srv, galleta)
 	linea, err := br.ReadString('\n')
 	if err != nil {
 		t.Fatalf("leyendo del SSE: %v", err)
+	}
+	// Sin esto el test pasaría contra una respuesta que no trae ningún evento
+	// —un 404, por ejemplo—: no encontrar el secreto en un cuerpo vacío no
+	// demuestra nada.
+	if !strings.HasPrefix(linea, "data: ") {
+		t.Fatalf("la primera línea no es un evento: %q", linea)
 	}
 	for _, secreto := range []string{u.Email, u.Name} {
 		if strings.Contains(linea, secreto) {
@@ -3191,7 +3276,11 @@ func (m *manejadorEventos) sse(w http.ResponseWriter, r *http.Request) {
 	// movería nunca.
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	vaciar.Flush() // que el cliente sepa que está conectado antes del primer evento
+	// Manda las cabeceras ya. Hoy el hub siempre deja un evento listo antes de
+	// que Suscribir vuelva, así que no cambia nada observable; existe para que
+	// el tiempo hasta el primer byte no dependa de cuánto tarde Suscribir, en
+	// vez de heredar en silencio una garantía que vive en otro paquete.
+	vaciar.Flush()
 
 	// Suscribir devuelve un canal ya con el estado vigente adentro, así que el
 	// panel se pinta al instante en vez de esperar a la próxima rotación.
@@ -3248,8 +3337,17 @@ Junto a las otras rutas de `/live/`:
 
 - [ ] **Step 5: Correr los tests y verificar que pasan**
 
-Run: `go test ./internal/web/ -v -count=1`
-Expected: PASS, toda la suite del paquete.
+Run: `go test ./internal/web/ -count=3 ./internal/web/`
+Expected: PASS, toda la suite del paquete, sin intermitencia. Son 8 tests de SSE.
+
+Dos de ellos existen porque su mutación no rompía nada:
+`TestSSEElMensajeTerminaEnLineaEnBlanco` (escribir `
+` en vez de `
+
+` dejaba la
+suite verde y el panel muerto en el navegador) y
+`TestSSEElApagadoDelHubCierraLaConexion` (ignorar `!abierto` convertía el apagado
+en un bucle cerrado, justo el camino del que depende el `Shutdown` de la Task 8).
 
 - [ ] **Step 6: Verificar que no hay carreras**
 
