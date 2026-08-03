@@ -4265,7 +4265,7 @@ func contarSesiones(t *testing.T, db *sql.DB) int {
 }
 ```
 
-Los imports del archivo son: `context`, `database/sql`, `io`, `log`, `net/http`, `testing`, `time`, más `zapping-live/internal/auth`, `zapping-live/internal/cuenta` y `zapping-live/internal/storage/storagetest`.
+Los imports del archivo son: `context`, `database/sql`, `io`, `log`, `testing`, `time`, más `zapping-live/internal/auth`, `zapping-live/internal/cuenta` y `zapping-live/internal/storage/storagetest`. **No lleva `net/http`**: `TestElServidorNoLlevaWriteTimeout` sólo llama a `nuevoServidor("8080", nil)` y lee campos del resultado, así que nunca nombra el paquete.
 
 - [ ] **Step 2: Correr los tests y verificar que fallan**
 
