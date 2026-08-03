@@ -461,7 +461,15 @@ Las cuatro se cumplen en `cmd/server` y en `internal/web`: `Engine.Run` tiene un
 llamante en todo el proyecto; `Hub.Publicar` no bloquea y el hook no tiene nada que pueda
 entrar en pánico; el router registra `/live/stream.m3u8` y `/live/segments/{name}` como rutas
 hermanas; y `HookDeRotacion` copia los nombres de `Snapshot.Window` en vez de pasar el slice
-compartido. Hay test para las cuatro.
+compartido.
+
+**Hay test para dos de las cuatro**, y conviene decir cuáles: el hook no bloqueante
+(`TestHookDeRotacionNoBloqueaConElHubDetenido`) y la copia del snapshot
+(`TestHookDeRotacionNoMutaElSnapshot`). Las otras dos siguen siendo **convenciones que ningún
+test fija**: que `Engine.Run` tenga un único llamante es una propiedad estática que nadie
+comprueba, y la relación hermana entre `/live/stream.m3u8` y `/live/segments/` está clavada
+por separado en dos tests distintos, sin nada que ate una ruta a la otra. Mover ambas de forma
+coordinada rompería los tests por 404, pero por la razón equivocada.
 
 Del bloque 03 (auth y base de datos):
 

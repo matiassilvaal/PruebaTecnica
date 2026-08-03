@@ -77,10 +77,15 @@ func (p *manejadorPaginas) render(w http.ResponseWriter, pagina string, codigo i
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Ninguna de estas páginas es cacheable: /player lleva el nombre del
-	// usuario y los 422 el email que tipeó. Una respuesta sin Set-Cookie y sin
-	// directivas de caché es cacheable HEURÍSTICAMENTE por un intermediario
-	// (RFC 9111 §4.2.2), así que el silencio no alcanza: hay que decirlo.
+	// /player responde 200 y lleva el nombre del usuario. Un 200 sin Set-Cookie
+	// y sin directivas de caché es cacheable HEURÍSTICAMENTE por un
+	// intermediario (200 está entre los códigos que la RFC 9110 §15 permite
+	// cachear así), o sea que el silencio no alcanza: hay que decirlo.
+	//
+	// Los 422 de los formularios nunca fueron cacheables heurísticamente —422
+	// no está en esa lista—, pero la cabecera va igual para todas: una sola
+	// regla es más fácil de sostener que una excepción por código, y de paso
+	// mantiene el email tipeado fuera de cualquier caché intermedia.
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(codigo)
 	buf.WriteTo(w)

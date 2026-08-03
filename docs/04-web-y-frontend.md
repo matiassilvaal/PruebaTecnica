@@ -71,9 +71,12 @@ Los handlers son el primer llamante de casi todo lo que se construyó en `intern
    Una sola fuente de verdad, para que la cookie y la fila de la base no caduquen en
    momentos distintos.
 
-Además, `render` responde con `Cache-Control: no-store`: `/player` lleva el nombre del
-usuario y los 422 el email tipeado, y una respuesta sin `Set-Cookie` y sin directivas de
-caché es cacheable heurísticamente por un intermediario.
+Además, `render` responde con `Cache-Control: no-store`. El caso que lo justifica es
+**`/player`**: responde 200, lleva el nombre del usuario, y un 200 sin `Set-Cookie` y sin
+directivas de caché es cacheable **heurísticamente** por un intermediario. Los 422 de los
+formularios nunca lo fueron —422 no está entre los códigos que la RFC 9110 §15 permite
+cachear así—, pero la cabecera se emite para todas por igual: una sola regla es más fácil de
+sostener que una excepción por código.
 
 ## Handlers del stream — `stream.go`
 
@@ -164,6 +167,8 @@ w.Header().Set("Content-Type", "text/event-stream")
 w.Header().Set("Cache-Control", "no-cache")
 w.Header().Set("Connection", "keep-alive")
 w.Header().Set("X-Accel-Buffering", "no")
+w.WriteHeader(http.StatusOK)
+vaciar.Flush()                           // manda las cabeceras YA, antes de Suscribir
 
 eventos, salir := hub.Suscribir()
 defer salir()
@@ -188,7 +193,13 @@ for {
 }
 ```
 
-Tres cosas que no estaban en el diseño y que la implementación necesitó:
+Cuatro cosas que no estaban en el diseño y que la implementación necesitó:
+
+- **El `WriteHeader` + `Flush` antes de `Suscribir`.** Hoy no cambia nada observable, porque
+  el hub siempre deja un evento listo antes de que `Suscribir` vuelva. Existe para que el
+  tiempo hasta el primer byte dependa de este handler y no de cuánto tarde un paquete
+  distinto: heredar esa garantía en silencio la volvería frágil ante cualquier cambio en
+  `viewers`.
 
 - **`X-Accel-Buffering: no`.** nginx bufferiza las respuestas por defecto, y eso convierte un
   stream de eventos en una entrega a bloques: el panel se movería a saltos o no se movería
@@ -263,16 +274,21 @@ rutas. Repetirlas en el JS crearía una segunda fuente de verdad que puede diver
 primera sin que nada se queje, y los tests de Go no ejecutan JavaScript.
 
 ```js
-if (Hls.isSupported()) {
-  const hls = new Hls({
+var escenario = document.querySelector('.escenario');
+var urlPlaylist = escenario.dataset.playlist;   // la sirve el servidor, no el JS
+
+// window.Hls y no Hls a secas: si el script vendorizado no cargó, `Hls` no está
+// definido y evaluarlo lanzaría en vez de caer al camino nativo de Safari.
+if (window.Hls && window.Hls.isSupported()) {
+  var hls = new Hls({
     liveSyncDurationCount: 3,   // se posiciona al inicio de la ventana: máximo margen
     lowLatencyMode: false,      // no aplica: no es LL-HLS
     enableWorker: true,         // demux fuera del hilo principal
   });
-  hls.loadSource('/live/stream.m3u8');
+  hls.loadSource(urlPlaylist);
   hls.attachMedia(video);
 } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-  video.src = '/live/stream.m3u8';   // Safari reproduce HLS nativo
+  video.src = urlPlaylist;      // Safari reproduce HLS nativo
 }
 ```
 

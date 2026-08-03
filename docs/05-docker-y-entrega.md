@@ -30,7 +30,9 @@ FROM alpine:3.20
 RUN adduser -D -u 10001 app && apk add --no-cache wget
 WORKDIR /app
 COPY --from=build /out/server .
-COPY web/ ./web/
+# OBSOLETA — NO copiar: `COPY web/ ./web/` hacía falta cuando los assets vivían
+# fuera del binario. Desde el bloque 04 van embebidos con go:embed bajo
+# internal/web/, así que ese directorio no existe y la línea rompe el build.
 COPY segments/ ./segments/               # los 64 .ts + segment.m3u8
 RUN mkdir -p /data && chown -R app /data
 USER app
