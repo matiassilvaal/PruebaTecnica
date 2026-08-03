@@ -420,8 +420,8 @@ el healthcheck pasa— y el problema aparecería recién cuando alguien intente 
 
 ## Tests
 
-**66 tests** en los cuatro paquetes del bloque: `internal/config` (3), `internal/viewers` (9),
-`internal/web` (50) y `cmd/server` (4). Los handlers se prueban con `net/http/httptest`, sin
+**69 tests** en los cuatro paquetes del bloque: `internal/config` (3), `internal/viewers` (11),
+`internal/web` (51) y `cmd/server` (4). Los handlers se prueban con `net/http/httptest`, sin
 levantar un servidor real; el hub se prueba sin HTTP y sin motor, que es lo que compra su
 ignorancia deliberada de los dos.
 
@@ -470,8 +470,8 @@ respaldan la afirmación sobre manejo de RAM y sobre sync/async: conviene que ex
 noten. El segundo no existía al principio — la garantía más importante del hub no tenía test
 aislado, y eso se descubrió mutando el `select` de `Publicar` y viendo que nadie se quejaba.
 
-Cobertura de los paquetes del bloque: `viewers` 97,6 %, `config` 93,9 %, `web` 77,1 %,
-`cmd/server` 25,0 % (`run()` no se prueba: es cableado, y probarlo exigiría levantar el
+Cobertura de los paquetes del bloque: `viewers` 95,8 %, `config` 93,9 %, `web` 77,0 %,
+`cmd/server` 21,4 % (`run()` no se prueba: es cableado, y probarlo exigiría levantar el
 proceso — lo que sí se verifica de ese archivo es `limpiarSesiones` y la ausencia de
 `WriteTimeout`).
 
