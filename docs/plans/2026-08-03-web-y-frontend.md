@@ -4184,6 +4184,77 @@ func TestLimpiarSesionesRespetaLasVigentes(t *testing.T) {
 	}
 }
 
+func TestLimpiarSesionesBarreDeFormaPeriodica(t *testing.T) {
+	// El test de arriba no distingue "limpia una vez al arrancar" de "limpia
+	// siempre": el barrido inicial ya se lleva la primera sesión vencida. Acá
+	// la segunda se crea DESPUÉS de que ese primer barrido ocurrió, así que
+	// sólo un barrido periódico puede eliminarla. Sin esto, cambiar el bucle
+	// por una sola pasada dejaba la suite en verde y la tabla creciendo.
+	db := storagetest.AbrirMigrada(t)
+	ctx := context.Background()
+
+	usuarios := cuenta.NewStore(db)
+	u, err := cuenta.Registrar(ctx, usuarios, func(p string) (string, error) { return "hash-" + p, nil },
+		"Ana Prueba", "ana@ejemplo.cl", "contrasena-larga")
+	if err != nil {
+		t.Fatalf("Registrar: %v", err)
+	}
+
+	ayer := time.Now().Add(-24 * time.Hour)
+	viejas := auth.NewSessions(db, time.Hour, auth.ConReloj(func() time.Time { return ayer }))
+	sesiones := auth.NewSessions(db, time.Hour)
+
+	crearVencida := func() {
+		t.Helper()
+		if _, err := viejas.Crear(ctx, u.ID); err != nil {
+			t.Fatalf("creando la sesión vencida: %v", err)
+		}
+	}
+	esperarVacio := func(motivo string) {
+		t.Helper()
+		limite := time.Now().Add(time.Second)
+		for time.Now().Before(limite) {
+			if contarSesiones(t, db) == 0 {
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		t.Fatalf("se agotó el plazo: %s", motivo)
+	}
+
+	crearVencida()
+	ctxLimpieza, cancelar := context.WithCancel(ctx)
+	defer cancelar()
+	go limpiarSesiones(ctxLimpieza, sesiones, 10*time.Millisecond, log.New(io.Discard, "", 0))
+
+	esperarVacio("el primer barrido no borró la sesión vencida")
+
+	// La segunda llega con la goroutine ya corriendo: sólo un barrido que se
+	// repita puede alcanzarla.
+	crearVencida()
+	esperarVacio("no hubo un segundo barrido: la limpieza no es periódica")
+}
+
+func TestElServidorNoLlevaWriteTimeout(t *testing.T) {
+	// Un WriteTimeout cortaría TODA conexión SSE a los pocos segundos, que es
+	// justo lo que este servicio necesita mantener abierta. El problema que
+	// resuelve —clientes que no leen— ya lo cubre el backpressure del hub, y
+	// contra slowloris está ReadHeaderTimeout, que no toca las respuestas
+	// largas. Sin este test, agregarlo un día "por prudencia" rompería el
+	// panel en vivo sin que nada se quejara.
+	srv := nuevoServidor("8080", nil)
+
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, quiero 0: cortaría las conexiones SSE", srv.WriteTimeout)
+	}
+	if srv.ReadHeaderTimeout == 0 {
+		t.Error("ReadHeaderTimeout = 0: hace falta contra slowloris")
+	}
+	if srv.Addr != ":8080" {
+		t.Errorf("Addr = %q, quiero \":8080\"", srv.Addr)
+	}
+}
+
 func contarSesiones(t *testing.T, db *sql.DB) int {
 	t.Helper()
 	var n int
@@ -4194,7 +4265,7 @@ func contarSesiones(t *testing.T, db *sql.DB) int {
 }
 ```
 
-Los imports del archivo son: `context`, `database/sql`, `io`, `log`, `testing`, `time`, más `zapping-live/internal/auth`, `zapping-live/internal/cuenta` y `zapping-live/internal/storage/storagetest`.
+Los imports del archivo son: `context`, `database/sql`, `io`, `log`, `net/http`, `testing`, `time`, más `zapping-live/internal/auth`, `zapping-live/internal/cuenta` y `zapping-live/internal/storage/storagetest`.
 
 - [ ] **Step 2: Correr los tests y verificar que fallan**
 
@@ -4259,7 +4330,12 @@ func barrer(ctx context.Context, s *auth.Sessions, registro *log.Logger) {
 - [ ] **Step 4: Correr los tests y verificar que pasan**
 
 Run: `go test ./cmd/server/ -v -count=1`
-Expected: PASS, 2 tests.
+Expected: PASS, 4 tests.
+
+Dos de ellos existen porque su mutación no rompía nada: cambiar el bucle de
+`limpiarSesiones` por una sola pasada (el barrido inicial ya se llevaba la única
+sesión vencida del otro test) y agregar `WriteTimeout` al `http.Server`, que
+habría cortado todas las conexiones SSE en silencio.
 
 - [ ] **Step 5: Escribir `cmd/server/main.go`**
 
@@ -4300,6 +4376,25 @@ const intervaloLimpieza = time.Hour
 // señal. Las de SSE ya se habrán ido por su cuenta: la cancelación del
 // contexto cierra el hub y sus handlers vuelven.
 const plazoApagado = 10 * time.Second
+
+// nuevoServidor arma el http.Server con sus tiempos límite.
+//
+// Está separado de run() para que un test pueda afirmar sobre esos tiempos:
+// la ausencia de WriteTimeout es una decisión de diseño, y sin un test que la
+// fije, agregarlo un día "por prudencia" cortaría todas las conexiones SSE sin
+// que nada se quejara.
+func nuevoServidor(puerto string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:    ":" + puerto,
+		Handler: h,
+		// Contra slowloris, sin tocar las respuestas largas.
+		ReadHeaderTimeout: 10 * time.Second,
+		// SIN WriteTimeout a propósito: cortaría toda conexión SSE a los pocos
+		// segundos, que es justo lo que este servicio necesita mantener
+		// abierto. El problema que WriteTimeout resuelve —clientes que no
+		// leen— ya está cubierto por el backpressure del hub.
+	}
+}
 
 func main() {
 	registro := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
@@ -4360,25 +4455,16 @@ func run(registro *log.Logger) error {
 	go motor.Run(ctx)
 	go limpiarSesiones(ctx, sesiones, intervaloLimpieza, registro)
 
-	srv := &http.Server{
-		Addr: ":" + cfg.Puerto,
-		Handler: web.NewRouter(web.Deps{
-			Motor:    motor,
-			Pool:     pool,
-			Hub:      hub,
-			Guard:    guard,
-			Sesiones: sesiones,
-			Usuarios: usuarios,
-			Salud:    db.PingContext,
-			Log:      registro,
-		}),
-		// Contra slowloris, sin tocar las respuestas largas.
-		ReadHeaderTimeout: 10 * time.Second,
-		// SIN WriteTimeout a propósito: cortaría toda conexión SSE a los pocos
-		// segundos, que es justo lo que este servicio necesita mantener
-		// abierto. El problema que WriteTimeout resuelve —clientes que no
-		// leen— ya está cubierto por el backpressure del hub.
-	}
+	srv := nuevoServidor(cfg.Puerto, web.NewRouter(web.Deps{
+		Motor:    motor,
+		Pool:     pool,
+		Hub:      hub,
+		Guard:    guard,
+		Sesiones: sesiones,
+		Usuarios: usuarios,
+		Salud:    db.PingContext,
+		Log:      registro,
+	}))
 
 	errores := make(chan error, 1)
 	go func() {
