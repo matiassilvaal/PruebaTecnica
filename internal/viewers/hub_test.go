@@ -90,10 +90,14 @@ func TestHubClienteLentoNoBloqueaALosDemas(t *testing.T) {
 	h := NewHub()
 	go h.Run(ctx)
 
-	lento, salirLento := h.Suscribir() // nunca se lee: es el cliente atascado
-	defer salirLento()
-	rapido, salirRapido := h.Suscribir()
-	defer salirRapido()
+	// Sin defer de las funciones de baja a propósito: el `defer cancelar()` de
+	// arriba ya cierra los canales al apagar el hub. Si además se difiriera la
+	// baja, un t.Fatal en este test la ejecutaría ANTES que cancelar (los defer
+	// corren en orden inverso) y quedaría bloqueada mandando a un Run detenido:
+	// el fallo se reportaría como un cuelgue de diez minutos en vez de una
+	// línea FAIL.
+	lento, _ := h.Suscribir() // nunca se lee: es el cliente atascado
+	rapido, _ := h.Suscribir()
 
 	// El cliente rápido necesita un lector ACTIVO. Sin él su buffer se llenaría
 	// igual que el del lento, y el test no distinguiría "el hub descartó por
@@ -138,13 +142,22 @@ func TestHubClienteLentoNoBloqueaALosDemas(t *testing.T) {
 func TestHubDesconexionNoDejaGoroutines(t *testing.T) {
 	ctx, cancelar := context.WithCancel(context.Background())
 	h := NewHub()
-	go h.Run(ctx)
+
+	// Run arranca envuelto en un canal propio para poder afirmar sobre ESTA
+	// goroutine. runtime.NumGoroutine() es global al proceso: los tests
+	// anteriores dejan sus Run drenando, así que un descenso del contador
+	// puede venir de una goroutine ajena terminando mientras esta sigue viva.
+	// Con `corriendo` la comprobación es directa y no admite esa confusión.
+	corriendo := make(chan struct{})
+	go func() {
+		defer close(corriendo)
+		h.Run(ctx)
+	}()
 	esperarA(t, "que el hub arranque", func() bool { return h.Espectadores() == 0 })
 
-	// La medición se toma CON Run corriendo, y al final se exige estrictamente
-	// menos: así el test sólo pasa si Run terminó de verdad. Con `<=` pasaría
-	// igual sin que Run volviera nunca, porque suscribir y dar de baja no crean
-	// goroutines — sería un test que miente.
+	// Alta y baja repetidas no deben acumular nada. Acá NumGoroutine() sí
+	// sirve: nada en este bucle crea goroutines, así que un aumento sólo puede
+	// venir del hub.
 	base := runtime.NumGoroutine()
 	for i := 0; i < 50; i++ {
 		_, salir := h.Suscribir()
@@ -152,14 +165,70 @@ func TestHubDesconexionNoDejaGoroutines(t *testing.T) {
 	}
 	esperarA(t, "que se den de baja todos", func() bool { return h.Espectadores() == 0 })
 	if n := runtime.NumGoroutine(); n > base {
-		t.Fatalf("suscribir y dar de baja dejó goroutines: %d, empezó en %d", n, base)
+		t.Errorf("suscribir y dar de baja dejó goroutines: %d, empezó en %d", n, base)
 	}
 
 	cancelar()
-	esperarA(t, "que la goroutine de Run termine", func() bool {
-		runtime.Gosched()
-		return runtime.NumGoroutine() < base
-	})
+	select {
+	case <-corriendo:
+	case <-time.After(time.Second):
+		t.Fatal("Run no volvió tras cancelar el contexto")
+	}
+}
+
+func TestApagarCierraLosCanalesDeLosClientes(t *testing.T) {
+	// Es lo que hace que los handlers SSE salgan de su bucle solos al apagar el
+	// proceso. Sin esto, cada espectador conectado dejaría una goroutine
+	// esperando eventos que ya no van a llegar, y http.Server.Shutdown agotaría
+	// su plazo completo esperando conexiones que no se cierran nunca.
+	ctx, cancelar := context.WithCancel(context.Background())
+	h := NewHub()
+	go h.Run(ctx)
+
+	// Deliberadamente SIN llamar a salir(): lo que se prueba es que el apagado
+	// cierra el canal por su cuenta. Si el test se diera de baja primero, el
+	// canal lo cerraría la rama de baja y esta comprobación no probaría nada.
+	ch, _ := h.Suscribir()
+	cancelar()
+
+	plazo := time.After(time.Second)
+	for {
+		select {
+		case _, abierto := <-ch:
+			if !abierto {
+				return // el canal se cerró: es exactamente lo que se busca
+			}
+			// Eventos pendientes en el buffer: seguir drenando hasta el cierre.
+		case <-plazo:
+			t.Fatal("el canal del cliente no se cerró al apagar el hub: el handler SSE quedaría colgado")
+		}
+	}
+}
+
+func TestPublicarNoBloqueaConElHubDetenido(t *testing.T) {
+	// LA garantía que sostiene todo el diseño: Publicar lo llama el hook de
+	// rotación del motor, síncronamente en la goroutine que hace avanzar el
+	// stream. Si se bloqueara, el stream se detendría para TODOS.
+	//
+	// Se prueba en aislamiento y sin arrancar Run: así nadie drena `difundir`,
+	// y basta con superar su capacidad para que el select/default sea lo único
+	// que separa esta función de un bloqueo permanente. Probarlo con Run
+	// corriendo no serviría — el hub vacía el canal en microsegundos y un
+	// Publicar bloqueante pasaría igual.
+	h := NewHub() // Run nunca se llama
+
+	hecho := make(chan struct{})
+	go func() {
+		defer close(hecho)
+		for i := 0; i < capacidadDifusion*10; i++ {
+			h.Publicar(Evento{Secuencia: int64(i)})
+		}
+	}()
+	select {
+	case <-hecho:
+	case <-time.After(time.Second):
+		t.Fatal("Publicar se bloqueó con el hub detenido: eso frenaría la goroutine de rotación del motor")
+	}
 }
 
 func TestSalirEsIdempotente(t *testing.T) {

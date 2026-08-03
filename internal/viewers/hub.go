@@ -25,6 +25,11 @@ const capacidadDifusion = 8
 // Evento es el estado que ve el panel del player. Se manda completo, no como
 // delta: por eso descartarlo ante un cliente lento es inofensivo — el
 // siguiente vuelve a traer todo.
+//
+// Ventana es de SÓLO LECTURA una vez pasada a Publicar. El hub conserva el
+// último evento para entregárselo a quien se conecte, así que ese slice sigue
+// vivo mucho después de la llamada y lo comparten todos los espectadores:
+// mutarlo corrompería lo que ven todos.
 type Evento struct {
 	Espectadores   int64    `json:"viewers"`
 	Secuencia      int64    `json:"sequence"`
@@ -64,6 +69,8 @@ type Hub struct {
 	espectadores atomic.Int64
 }
 
+// NewHub crea el hub. Todavía no reparte nada: hay que arrancar Run en su
+// propia goroutine, y exactamente una vez.
 func NewHub() *Hub {
 	return &Hub{
 		alta:      make(chan *cliente),
@@ -119,8 +126,14 @@ func (h *Hub) Suscribir() (<-chan Evento, func()) {
 	}
 
 	// El alta ya fue aceptada; falta que la goroutine dueña termine de
-	// procesarla. El caso de h.terminado cubre que Run se apague justo en esa
-	// ventana: sin él, esta espera no volvería nunca.
+	// procesarla.
+	//
+	// Con `alta` sin buffer, que el envío de arriba haya tenido éxito significa
+	// que Run ya está dentro del cuerpo del case, y ese cuerpo cierra c.listo
+	// sin condiciones: hoy este select siempre sale por la primera rama. La de
+	// h.terminado se mantiene porque la garantía depende de que `alta` NO tenga
+	// buffer — si alguien se lo agregara, aparecería la ventana en la que Run
+	// se apaga con un alta encolada y sin esta rama la espera no volvería nunca.
 	select {
 	case <-c.listo:
 	case <-h.terminado:
@@ -176,8 +189,14 @@ func (h *Hub) Run(ctx context.Context) {
 			close(c.listo)
 
 		case c := <-h.baja:
+			// Hoy es inalcanzable: el sync.Once de Suscribir ya garantiza que
+			// cada cliente llegue acá una sola vez. Se deja porque es la guarda
+			// que hace que el invariante viva en el dueño del estado y no sólo
+			// en el llamante: sin ella, cualquier futura vía de baja que no
+			// pase por ese Once descontaría de más y cerraría un canal ya
+			// cerrado, que es un pánico.
 			if _, existe := clientes[c]; !existe {
-				continue // baja repetida: ignorar sin descontar de más
+				continue
 			}
 			delete(clientes, c)
 			close(c.ch)
