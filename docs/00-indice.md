@@ -14,7 +14,7 @@ los archivos que toca, sus criterios de aceptación y sus tests. Se implementan 
 | 02 | [02-motor-hls.md](02-motor-hls.md) | Pool, tabla de duraciones, snapshot inmutable, motor del reloj | ✅ Completo |
 | 03 | [03-auth-y-db.md](03-auth-y-db.md) | SQLite, usuarios, bcrypt, sesiones, middleware | ✅ Completo |
 | 04 | [04-web-y-frontend.md](04-web-y-frontend.md) | Handlers, templates, player, panel SSE, glassmorfismo | ✅ Completo |
-| 05 | [05-docker-y-entrega.md](05-docker-y-entrega.md) | Dockerfile, preparación de segmentos, ejecución | ⬜ Pendiente — ojo: el `COPY web/` del diseño original **ya no aplica** (assets embebidos con `go:embed`) |
+| 05 | [05-docker-y-entrega.md](05-docker-y-entrega.md) | Dockerfile, preparación de segmentos, ejecución, verificación | ✅ Completo |
 | 06 | [06-decisiones.md](06-decisiones.md) | Justificaciones para el README y el correo de entrega | 🔄 Vivo |
 
 ## Orden de implementación y por qué
