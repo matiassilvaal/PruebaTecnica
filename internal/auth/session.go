@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -79,22 +80,34 @@ func (s *Sessions) Crear(ctx context.Context, userID int64) (string, error) {
 //
 // La búsqueda es por clave primaria sobre un hash de longitud fija, así que no
 // hay riesgo de filtrar información por tiempo de respuesta.
-func (s *Sessions) Resolver(ctx context.Context, token string) (int64, bool) {
+//
+// El error de vuelta es DISTINTO de "no encontrado"/"expirado": ese caso
+// sigue siendo (0, false, nil), la respuesta normal ante un token que
+// simplemente no vale. El error sólo viaja cuando la consulta a la base
+// falló de verdad (por ejemplo, SQLite caído). Colapsar ambos casos en un
+// mismo (0, false) hacía que RequirePage mandara a /login tanto si el token
+// era inválido como si la base no respondía; con la base caída, el usuario
+// reintenta, vuelve a fallar, y entra en un bucle de redirección sin que
+// quede una sola línea de log indicando la causa real.
+func (s *Sessions) Resolver(ctx context.Context, token string) (int64, bool, error) {
 	if token == "" {
-		return 0, false
+		return 0, false, nil
 	}
 	var userID, expira int64
 	err := s.db.QueryRowContext(ctx,
 		`SELECT user_id, expires_at FROM sessions WHERE token_hash = ?`,
 		hashToken(token),
 	).Scan(&userID, &expira)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
 	if err != nil {
-		return 0, false
+		return 0, false, fmt.Errorf("resolviendo la sesión: %w", err)
 	}
 	if s.now().Unix() >= expira {
-		return 0, false
+		return 0, false, nil
 	}
-	return userID, true
+	return userID, true, nil
 }
 
 func (s *Sessions) Destruir(ctx context.Context, token string) error {

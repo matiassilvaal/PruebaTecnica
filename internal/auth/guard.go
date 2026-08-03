@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"log"
 	"net/http"
 
 	"zapping-live/internal/cuenta"
@@ -55,7 +56,15 @@ func (g *Guard) proteger(next http.Handler, rechazar http.HandlerFunc) http.Hand
 			rechazar(w, r)
 			return
 		}
-		userID, ok := g.sesiones.Resolver(r.Context(), c.Value)
+		userID, ok, err := g.sesiones.Resolver(r.Context(), c.Value)
+		if err != nil {
+			// Distinto de "no hay sesión": acá la base falló de verdad. Sin
+			// este log, un SQLite caído se ve desde afuera como un bucle de
+			// redirección a /login sin ninguna pista de la causa real.
+			log.Printf("auth: resolviendo sesión: %v", err)
+			rechazar(w, r)
+			return
+		}
 		if !ok {
 			rechazar(w, r)
 			return

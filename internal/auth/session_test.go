@@ -31,6 +31,18 @@ func nuevasSesiones(t *testing.T, ttl time.Duration) (*Sessions, *relojFijo, int
 	return NewSessions(db, ttl, ConReloj(reloj.Now)), reloj, id, ctx
 }
 
+// resuelve envuelve Resolver para los tests que sólo les importa el "ok":
+// exige que err sea nil (un error real de la base no debería ocurrir en
+// ninguno de estos escenarios) y devuelve sólo userID y ok.
+func resuelve(t *testing.T, s *Sessions, ctx context.Context, token string) (int64, bool) {
+	t.Helper()
+	userID, ok, err := s.Resolver(ctx, token)
+	if err != nil {
+		t.Fatalf("Resolver: error inesperado: %v", err)
+	}
+	return userID, ok
+}
+
 func TestTTL(t *testing.T) {
 	s, _, _, _ := nuevasSesiones(t, 90*time.Minute)
 	if got := s.TTL(); got != 90*time.Minute {
@@ -47,7 +59,10 @@ func TestCrearYResolver(t *testing.T) {
 	if len(token) < 40 {
 		t.Errorf("el token parece corto (%d chars): %q", len(token), token)
 	}
-	got, ok := s.Resolver(ctx, token)
+	got, ok, err := s.Resolver(ctx, token)
+	if err != nil {
+		t.Fatalf("Resolver: %v", err)
+	}
 	if !ok {
 		t.Fatal("el token recién creado debería resolver")
 	}
@@ -95,11 +110,27 @@ func TestSesionExpirada(t *testing.T) {
 		t.Fatal(err)
 	}
 	reloj.Avanzar(59 * time.Minute)
-	if _, ok := s.Resolver(ctx, token); !ok {
+	if _, ok := resuelve(t, s, ctx, token); !ok {
 		t.Error("dentro del TTL debería seguir resolviendo")
 	}
-	reloj.Avanzar(2 * time.Minute) // total 61 min: pasado el TTL
-	if _, ok := s.Resolver(ctx, token); ok {
+	// Límite exacto: avanzar EXACTAMENTE el TTL (total 60 min) debe expirar
+	// la sesión. Resolver compara con `>=`; una mutación a `>` dejaría pasar
+	// este caso exacto y sólo lo atraparía este sub-test, no el de arriba
+	// (59 min, dentro del TTL) ni el de abajo (61 min, muy pasado el TTL).
+	reloj.Avanzar(1 * time.Minute) // total 60 min: exactamente el TTL
+	if _, ok := resuelve(t, s, ctx, token); ok {
+		t.Error("exactamente en el borde del TTL no debería resolver")
+	}
+}
+
+func TestSesionExpiradaPasadoElBorde(t *testing.T) {
+	s, reloj, uid, ctx := nuevasSesiones(t, time.Hour)
+	token, err := s.Crear(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloj.Avanzar(61 * time.Minute) // bien pasado el TTL
+	if _, ok := resuelve(t, s, ctx, token); ok {
 		t.Error("pasado el TTL no debería resolver")
 	}
 }
@@ -107,7 +138,7 @@ func TestSesionExpirada(t *testing.T) {
 func TestResolverTokenInvalido(t *testing.T) {
 	s, _, _, ctx := nuevasSesiones(t, time.Hour)
 	for _, tok := range []string{"", "inventado", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"} {
-		if _, ok := s.Resolver(ctx, tok); ok {
+		if _, ok := resuelve(t, s, ctx, tok); ok {
 			t.Errorf("el token %q no debería resolver", tok)
 		}
 	}
@@ -119,7 +150,7 @@ func TestDestruir(t *testing.T) {
 	if err := s.Destruir(ctx, token); err != nil {
 		t.Fatalf("Destruir: %v", err)
 	}
-	if _, ok := s.Resolver(ctx, token); ok {
+	if _, ok := resuelve(t, s, ctx, token); ok {
 		t.Error("tras Destruir el token no debería resolver")
 	}
 }
@@ -127,18 +158,49 @@ func TestDestruir(t *testing.T) {
 func TestDestruirDeUsuario(t *testing.T) {
 	// Es lo que previene session fixation: al iniciar sesión se descartan las
 	// anteriores, así un token entregado antes de autenticarse no queda válido.
+	//
+	// Usa DOS usuarios a propósito: con uno solo, nada distingue un
+	// `DELETE FROM sessions WHERE user_id = ?` correcto de un
+	// `DELETE FROM sessions` sin WHERE que borrara la tabla entera. Si
+	// alguien rompe el WHERE, este test debe notarlo porque las sesiones del
+	// otro usuario sobreviven.
 	s, _, uid, ctx := nuevasSesiones(t, time.Hour)
+	otroID := crearOtroUsuario(t, s, ctx, "Beto", "beto@x.com")
+
 	a, _ := s.Crear(ctx, uid)
 	b, _ := s.Crear(ctx, uid)
+	deOtro, err := s.Crear(ctx, otroID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	if err := s.DestruirDeUsuario(ctx, uid); err != nil {
 		t.Fatalf("DestruirDeUsuario: %v", err)
 	}
-	if _, ok := s.Resolver(ctx, a); ok {
+	if _, ok := resuelve(t, s, ctx, a); ok {
 		t.Error("la sesión a debería haber muerto")
 	}
-	if _, ok := s.Resolver(ctx, b); ok {
+	if _, ok := resuelve(t, s, ctx, b); ok {
 		t.Error("la sesión b debería haber muerto")
 	}
+	if _, ok := resuelve(t, s, ctx, deOtro); !ok {
+		t.Error("la sesión del OTRO usuario no debería haberse tocado: el WHERE user_id debe acotar el DELETE")
+	}
+}
+
+// crearOtroUsuario inserta un segundo usuario directamente por SQL (este
+// paquete no depende de cuenta.Store) para los tests que necesitan probar
+// que un DELETE está acotado a un usuario y no afecta a otro.
+func crearOtroUsuario(t *testing.T, s *Sessions, ctx context.Context, name, email string) int64 {
+	t.Helper()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO users (name, email, password_hash, created_at) VALUES (?,?,?,?)`,
+		name, email, "h", time.Now().Unix())
+	if err != nil {
+		t.Fatalf("creando %s: %v", name, err)
+	}
+	id, _ := res.LastInsertId()
+	return id
 }
 
 func TestLimpiarBorraSoloLasExpiradas(t *testing.T) {
@@ -154,10 +216,10 @@ func TestLimpiarBorraSoloLasExpiradas(t *testing.T) {
 	if n != 1 {
 		t.Errorf("Limpiar borró %d filas, quiero 1", n)
 	}
-	if _, ok := s.Resolver(ctx, vieja); ok {
+	if _, ok := resuelve(t, s, ctx, vieja); ok {
 		t.Error("la sesión vieja debería estar borrada")
 	}
-	if _, ok := s.Resolver(ctx, nueva); !ok {
+	if _, ok := resuelve(t, s, ctx, nueva); !ok {
 		t.Error("la sesión vigente NO debería haberse borrado")
 	}
 }
