@@ -3403,7 +3403,10 @@ Reemplazar el archivo entero:
   </div>
 </header>
 
-<main class="escenario">
+<!-- Las dos URL del stream viven acá y no en player.js: el servidor es quien
+     conoce su propio árbol de rutas, y así hay una sola fuente de verdad en
+     vez de una constante en Go y otra en JavaScript que pueden divergir. -->
+<main class="escenario" data-playlist="/live/stream.m3u8" data-eventos="/live/events">
   <section class="marco">
     <video id="video" playsinline controls autoplay muted poster=""></video>
     <!-- Overlay SIN backdrop-filter: encima del video sólo va un degradado.
@@ -3670,6 +3673,13 @@ button:hover { filter: brightness(1.1); }
   var fallo = document.getElementById('fallo');
   var volver = document.getElementById('volver-al-vivo');
 
+  // Las URL llegan desde el HTML que renderiza el servidor, que es quien conoce
+  // su propio árbol de rutas. Repetirlas acá crearía una segunda fuente de
+  // verdad que puede divergir de la primera sin que nada se queje.
+  var escenario = document.querySelector('.escenario');
+  var urlPlaylist = escenario.dataset.playlist;
+  var urlEventos = escenario.dataset.eventos;
+
   function mostrarFallo(texto) {
     fallo.textContent = texto;
     fallo.hidden = false;
@@ -3717,11 +3727,11 @@ button:hover { filter: brightness(1.1); }
 
     hls.on(Hls.Events.FRAG_BUFFERED, function () { fallo.hidden = true; });
 
-    hls.loadSource('/live/stream.m3u8');
+    hls.loadSource(urlPlaylist);
     hls.attachMedia(video);
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
     // Safari reproduce HLS de forma nativa y no necesita hls.js.
-    video.src = '/live/stream.m3u8';
+    video.src = urlPlaylist;
   } else {
     mostrarFallo('Este navegador no puede reproducir HLS.');
   }
@@ -3757,7 +3767,7 @@ button:hover { filter: brightness(1.1); }
   var duracionTramo = 1;
   var ultimaSecuencia = null;
 
-  var fuente = new EventSource('/live/events');
+  var fuente = new EventSource(urlEventos);
 
   fuente.onmessage = function (mensaje) {
     var e;
