@@ -20,3 +20,6 @@ Thumbs.db
 
 # Workspace de subagent-driven-development (scratch)
 .superpowers/
+
+# Imagenes exportadas para la entrega (~500 MB cada una).
+dist/
