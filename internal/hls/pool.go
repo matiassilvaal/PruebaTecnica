@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -133,3 +134,30 @@ func (p *Pool) Target() int { return p.target }
 
 // At devuelve el segmento en la posición i del pool.
 func (p *Pool) At(i int) Segment { return p.segments[i] }
+
+// Locate devuelve la secuencia absoluta vigente tras `elapsed` desde el inicio
+// del stream, y cuánto falta para la próxima rotación.
+//
+// La posición se DERIVA del reloj contra la tabla acumulada en vez de
+// incrementarse. Dos consecuencias:
+//
+//   - Los errores de temporización no se acumulan: el valor es correcto
+//     aunque el proceso se congele o un timer se atrase.
+//   - Los segmentos de duración distinta funcionan sin caso especial, porque
+//     `until` sale de la duración real del segmento vigente y no de una
+//     constante.
+func (p *Pool) Locate(elapsed time.Duration) (seq int64, until time.Duration) {
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	n := int64(len(p.segments))
+	cycles := int64(elapsed / p.total)
+	rem := elapsed % p.total
+
+	// Menor i tal que cum[i+1] > rem, lo que garantiza cum[i] <= rem < cum[i+1].
+	i := sort.Search(len(p.segments), func(k int) bool {
+		return p.cum[k+1] > rem
+	})
+
+	return cycles*n + int64(i), p.cum[i+1] - rem
+}
