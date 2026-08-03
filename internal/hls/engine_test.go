@@ -1,6 +1,7 @@
 package hls
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -168,4 +169,85 @@ func TestEngineLecturaConcurrente(t *testing.T) {
 	}
 	close(fin)
 	wg.Wait()
+}
+
+func TestEngineRunTerminaAlCancelar(t *testing.T) {
+	p, err := ParseManifest(fixture)
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	e := New(p)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	listo := make(chan struct{})
+	go func() {
+		e.Run(ctx)
+		close(listo)
+	}()
+
+	cancel()
+	select {
+	case <-listo:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run no terminó tras cancelar el contexto")
+	}
+}
+
+func TestEngineRunRotaConElTiempo(t *testing.T) {
+	p, err := ParseManifest(fixture)
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	// Un pool con segmentos de milisegundos permite observar varias rotaciones
+	// reales en un test rápido, sin esperar los 10s del material.
+	rapido := newPool([]Segment{
+		{Name: "a.ts", Duration: 20 * time.Millisecond},
+		{Name: "b.ts", Duration: 20 * time.Millisecond},
+		{Name: "c.ts", Duration: 20 * time.Millisecond},
+		{Name: "d.ts", Duration: 5 * time.Millisecond}, // el caso corto
+	}, p.dir)
+
+	e := New(rapido)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	time.Sleep(300 * time.Millisecond)
+	got := e.Current().Seq
+	// En 300ms con un ciclo de 65ms deben haber pasado varias rotaciones.
+	if got < 3 {
+		t.Errorf("Seq = %d tras 300ms, esperaba varias rotaciones", got)
+	}
+}
+
+func TestEngineRunSinCarreras(t *testing.T) {
+	p, err := ParseManifest(fixture)
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	rapido := newPool([]Segment{
+		{Name: "a.ts", Duration: 5 * time.Millisecond},
+		{Name: "b.ts", Duration: 5 * time.Millisecond},
+		{Name: "c.ts", Duration: 5 * time.Millisecond},
+	}, p.dir)
+
+	e := New(rapido)
+	ctx, cancel := context.WithCancel(context.Background())
+	go e.Run(ctx)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				if s := e.Current(); s == nil || len(s.Playlist) == 0 {
+					t.Error("snapshot inválido mientras Run rota")
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	cancel()
 }

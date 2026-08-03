@@ -1,6 +1,7 @@
 package hls
 
 import (
+	"context"
 	"sync/atomic"
 	"time"
 )
@@ -83,4 +84,23 @@ func (e *Engine) refresh() time.Duration {
 		e.onRotate(snap)
 	}
 	return until
+}
+
+// Run mantiene el stream avanzando hasta que se cancele el contexto.
+//
+// Cada espera se calcula contra el instante de inicio absoluto, no sumando
+// intervalos: si una iteración se atrasa, la siguiente se re-ancla al reloj en
+// vez de arrastrar el error. Por eso el bucle no puede derivar.
+func (e *Engine) Run(ctx context.Context) {
+	for {
+		until := e.refresh()
+
+		timer := time.NewTimer(until)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		}
+	}
 }
